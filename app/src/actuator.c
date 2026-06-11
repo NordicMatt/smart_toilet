@@ -28,7 +28,7 @@ LOG_MODULE_REGISTER(actuator);
  */
 #define MOTOR_SAFETY_MS	    1000
 /* Minimum time between flushes after the motor stops. */
-#define FLUSH_LOCKOUT_MS    3000
+#define FLUSH_LOCKOUT_MS    1000
 
 /* P1.06: HIGH = MOSFET on = motor runs (active high). */
 static const struct gpio_dt_spec motor_gpio =
