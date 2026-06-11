@@ -13,6 +13,7 @@
 #include <zephyr/logging/log.h>
 
 #include "actuator.h"
+#include "audio_stats.h"
 #include "control_output.h"
 #include "dmic.h"
 #include "kws/kws.h"
@@ -42,6 +43,8 @@ static int ww_loop(void)
 			LOG_ERR("Failed to read from DMIC (err %d)", err);
 			return err;
 		}
+
+		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
 		err = ww_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &ww_detected);
 		if (err == -EBUSY) {
@@ -83,6 +86,8 @@ static int kws_loop(void)
 			LOG_ERR("Failed to read from DMIC (err %d)", err);
 			return err;
 		}
+
+		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
 		err = kws_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &prediction);
 		if (err == -EBUSY) {

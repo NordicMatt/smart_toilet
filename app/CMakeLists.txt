@@ -23,3 +23,5 @@ target_sources(app PRIVATE
   src/kws/kws.c
   src/kws/nrf_edgeai_generated/nrf_edgeai_user_model.c
 )
+
+target_sources_ifdef(CONFIG_APP_AUDIO_STATS app PRIVATE src/audio_stats.c)

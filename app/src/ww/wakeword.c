@@ -62,6 +62,26 @@ static bool ww_postprocess(void)
 
 	LOG_DBG("postprocess: count: %2u, probability: %f", ww_count, (double)class_probability);
 
+#ifdef CONFIG_APP_AUDIO_STATS
+	/* Per-second tuning telemetry: how close the detector got. One frame is
+	 * 10 ms of audio, so 100 frames make one report.
+	 */
+	static uint32_t stat_frames;
+	static float stat_max_prob;
+	static uint32_t stat_max_count;
+
+	stat_max_prob = MAX(stat_max_prob, class_probability);
+	stat_max_count = MAX(stat_max_count, ww_count);
+
+	if (++stat_frames >= 100) {
+		LOG_INF("ww: peak prob %.2f (bar %.2f), peak votes %u/%d", (double)stat_max_prob,
+			(double)ww_threshold, stat_max_count, CONFIG_WW_COUNT_THRESHOLD);
+		stat_frames = 0;
+		stat_max_prob = 0.f;
+		stat_max_count = 0;
+	}
+#endif /* CONFIG_APP_AUDIO_STATS */
+
 	if (refractory > 0) {
 		refractory--;
 		return false;

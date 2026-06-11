@@ -56,6 +56,31 @@ Keep all grounds common (DK GND, motor-supply GND, Hall GND). The Hall idles at
 ~3.6 V, which is at the nRF GPIO input maximum — add a resistor divider if you
 see flaky reads.
 
+## Tuning the mic and wake word
+
+With `CONFIG_APP_AUDIO_STATS=y` (on by default in `prj.conf`), the log UART
+(VCOM1) prints one line of each per second:
+
+```
+audio: peak -4.2 dBFS, rms -21.7 dBFS, clipped 0/16000
+ww: peak prob 0.62 (bar 0.80), peak votes 4/10
+```
+
+Say "Shazaam" from the normal use position and read the lines for that second:
+
+- **`clipped` > 0 or peak pinned at 0.0 dBFS** → the mic is distorting; lower
+  `CONFIG_APP_PDM_GAIN_DB` (0.5 dB hardware steps, range -20..+20).
+- **Speech peaks below about -20 dBFS** → too quiet for the model; raise
+  `CONFIG_APP_PDM_GAIN_DB`.
+- **`peak prob` never crosses the bar** even with healthy levels → lower
+  `CONFIG_WW_PROBABILITY_THRESHOLD` (in 1/1000).
+- **`peak prob` crosses but `peak votes` stays short of the target** → the hits
+  are too spread out; lower `CONFIG_WW_COUNT_THRESHOLD` or raise
+  `CONFIG_WW_HISTORY_SIZE`.
+
+Aim for speech peaks around -6 to -3 dBFS with zero clipped samples, then tune
+the thresholds. Set `CONFIG_APP_AUDIO_STATS=n` for the deployed build.
+
 ## Notes / lessons learned
 
 - **P2.00–P2.05 are not usable as header GPIO** on this DK — the board
@@ -79,6 +104,18 @@ with Nordic Semiconductor integrated circuits.
 ## Build & flash
 
 Built against the Edge AI add-on west workspace (bundles its own nrf/zephyr).
+
+Alternative without a dedicated add-on workspace: use a plain NCS install
+(v3.3.1 works) and pass the add-on repo as an extra Zephyr module. Fetch the
+add-on once with `west init -m https://github.com/nrfconnect/sdk-edge-ai
+--manifest-rev v2.1.0 <dir>` (no `west update` needed), then:
+
+```sh
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 \
+  --chdir ~/ncs/v3.3.1 -- west build -b nrf54lm20dk/nrf54lm20b/cpuapp \
+  -d /path/to/this/repo/build /path/to/this/app -- \
+  -DEXTRA_ZEPHYR_MODULES=<dir>/edge-ai
+```
 
 ```sh
 # Build

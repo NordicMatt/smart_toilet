@@ -52,6 +52,22 @@ config WW_COUNT_THRESHOLD
 	  Number of predictions above threshold in predictions history required to confirm wakeword
 	  detection.
 
+config APP_PDM_GAIN_DB
+	int "PDM microphone digital gain (dB)"
+	range -20 20
+	default 12
+	help
+	  Digital gain applied in the PDM peripheral on top of the 0 dB hardware
+	  default. Raise it if speech at normal use distance peaks below about
+	  -20 dBFS; lower it if APP_AUDIO_STATS reports clipped samples.
+
+config APP_AUDIO_STATS
+	bool "Log audio level and wake-word tuning statistics"
+	help
+	  Once per second, log the microphone peak/RMS level in dBFS with a
+	  clipped-sample count, and the peak wake-word probability and vote
+	  count. Use this to tune APP_PDM_GAIN_DB and the WW_* thresholds.
+
 config KWS_PERIOD_MS
 	int "Length of keyword spotting window in wakeword-gated mode"
 	default 3000
