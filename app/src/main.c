@@ -13,6 +13,7 @@
 #include <zephyr/logging/log.h>
 
 #include "actuator.h"
+#include "audio_proc.h"
 #include "audio_stats.h"
 #include "control_output.h"
 #include "dmic.h"
@@ -44,6 +45,7 @@ static int ww_loop(void)
 			return err;
 		}
 
+		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
 		err = ww_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &ww_detected);
@@ -87,6 +89,7 @@ static int kws_loop(void)
 			return err;
 		}
 
+		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
 		err = kws_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &prediction);

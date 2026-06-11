@@ -25,3 +25,4 @@ target_sources(app PRIVATE
 )
 
 target_sources_ifdef(CONFIG_APP_AUDIO_STATS app PRIVATE src/audio_stats.c)
+target_sources_ifdef(CONFIG_APP_AUDIO_PROC app PRIVATE src/audio_proc.c)

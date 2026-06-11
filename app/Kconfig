@@ -68,6 +68,34 @@ config APP_AUDIO_STATS
 	  clipped-sample count, and the peak wake-word probability and vote
 	  count. Use this to tune APP_PDM_GAIN_DB and the WW_* thresholds.
 
+config APP_AUDIO_HPF
+	bool "High-pass filter the mic audio"
+	help
+	  Apply a 2nd-order Butterworth high-pass at 120 Hz to each audio
+	  block before detection, stripping rumble and handling noise below
+	  the speech band.
+
+config APP_AGC
+	bool "Automatic gain control on the mic audio"
+	help
+	  Track the speech peak level and apply a smoothed software gain that
+	  pulls it toward APP_AGC_TARGET_DBFS, compensating for speaker
+	  distance on top of the fixed APP_PDM_GAIN_DB hardware gain. Cannot
+	  undo saturation that happens in the PDM peripheral itself.
+
+config APP_AGC_TARGET_DBFS
+	int "AGC target peak level (dBFS)"
+	depends on APP_AGC
+	range -30 -6
+	default -20
+	help
+	  Peak level the AGC pulls speech toward. The wake-word model is most
+	  reliable with speech peaks in the -25 to -15 dBFS range.
+
+config APP_AUDIO_PROC
+	bool
+	default y if APP_AUDIO_HPF || APP_AGC
+
 config KWS_PERIOD_MS
 	int "Length of keyword spotting window in wakeword-gated mode"
 	default 3000
