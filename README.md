@@ -36,6 +36,46 @@ Actuator tuning (in `src/actuator.c`): `HALL_BLANKING_MS=250` ignores the Hall
 right after start (the magnet rests on the sensor) so start-up jitter can't end
 the flush early; `MOTOR_SAFETY_MS=1000` is a backstop; one rotation ≈ 700 ms.
 
+## Wiring
+
+```
+ nRF54LM20 DK                         External circuit
+ ------------                         ----------------
+ P1.06  ───────────────► gate         logic-level MOSFET
+ GND    ───────────────► source       drain ─► motor(-) , motor(+) ─► motor supply +
+                                       (flyback diode across the motor)
+
+ 5V0 (P6..P18 pin 1) ──► Hall VCC      Hall switch, magnet on the motor shaft
+ GND ─────────────────► Hall GND
+ P1.07 ◄──────────────── Hall OUT      idles ~3.6 V, pulls to 0 V when magnet present
+
+ P1.04 ──► mic CLK   P1.05 ◄── mic DAT   Adafruit 3492 (SEL→GND, VDD→1.8 V IO)
+```
+
+Keep all grounds common (DK GND, motor-supply GND, Hall GND). The Hall idles at
+~3.6 V, which is at the nRF GPIO input maximum — add a resistor divider if you
+see flaky reads.
+
+## Notes / lessons learned
+
+- **P2.00–P2.05 are not usable as header GPIO** on this DK — the board
+  controller routes them to the onboard QSPI flash. Disabling the flash in the
+  devicetree does *not* reconnect the header pin; the SoC pin never reaches it.
+  Use P1/P3 GPIO instead.
+- **Power the Hall sensor from 5 V.** On the 3 V rail it was below its minimum
+  supply and never asserted. The output is **active-low** (0 V present, 3.6 V
+  absent) — verify polarity with a meter rather than assuming.
+- The flush stop uses a **blanking window**, not a leave-then-return state
+  machine: at rest the magnet sits on the sensor, and jitter as it leaves
+  otherwise fires a false "rotation complete" within tens of milliseconds.
+- With two DKs attached, always pass `--dev-id <JLINK_SN>` to `west flash`.
+
+## License
+
+This project is licensed under the Nordic 5-Clause License
+(`LicenseRef-Nordic-5-Clause`) — see [LICENSE](LICENSE). It is intended for use
+with Nordic Semiconductor integrated circuits.
+
 ## Build & flash
 
 Built against the Edge AI add-on west workspace (bundles its own nrf/zephyr).
