@@ -1,0 +1,57 @@
+# Smart Toilet — voice-triggered flush
+
+Voice-activated flush actuator for the **nRF54LM20 DK**, built on the nRF Edge AI
+add-on. Saying the wake word **"Shazaam"** runs a flush motor through one
+rotation and stops it at the home position via a Hall sensor.
+
+Board target: `nrf54lm20dk/nrf54lm20b/cpuapp`. App mode: `APP_MODE_WW_ONLY`.
+
+## How it works
+
+1. PDM mic (`pdm20`) captures 16 kHz audio (`src/dmic.c`).
+2. The wake-word model (Edge AI solution 93499) runs on the Axon accelerator
+   (`src/ww/`). A detection requires the per-frame probability to exceed
+   `CONFIG_WW_PROBABILITY_THRESHOLD` (0.80) for 10 of the last 20 frames, plus a
+   ~1 s refractory period so one utterance fires once.
+3. On detection, `actuator_flush()` runs the motor; it stops when the Hall
+   sensor sees the shaft magnet return home (`src/actuator.c`).
+
+## Hardware / pinout
+
+| Signal        | Pin    | Notes |
+|---------------|--------|-------|
+| Motor drive   | P1.06  | Active-high → logic-level MOSFET gate |
+| Hall sensor   | P1.07  | Active-low, internal pull-up; **power the sensor from 5 V** (DK headers P6–P10/P18 pin 1) |
+| PDM mic CLK   | P1.04  | Adafruit 3492 (ST MP34DT01-M) |
+| PDM mic DAT   | P1.05  | mic SEL→GND (left), VDD→1.8 V IO |
+
+> **Do not use P2.00–P2.05** as header GPIO on this DK: the board controller
+> mux routes them to the onboard QSPI flash, so the header pins are dead by
+> default. P1/P3 pins are plain GPIO and work directly.
+
+Mic sensitivity is boosted with **+12 dB PDM gain** applied via
+`nrf_pdm_gain_set()` in `src/dmic.c` (the Zephyr DMIC API doesn't expose gain).
+
+Actuator tuning (in `src/actuator.c`): `HALL_BLANKING_MS=250` ignores the Hall
+right after start (the magnet rests on the sensor) so start-up jitter can't end
+the flush early; `MOTOR_SAFETY_MS=1000` is a backstop; one rotation ≈ 700 ms.
+
+## Build & flash
+
+Built against the Edge AI add-on west workspace (bundles its own nrf/zephyr).
+
+```sh
+# Build
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 \
+  --chdir /path/to/edge_ai_addon -- west build -d build /path/to/this/app
+
+# Flash (use --dev-id when more than one DK is attached)
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 \
+  --chdir /path/to/edge_ai_addon -- west flash -d build --dev-id <JLINK_SN>
+
+# Fast reflash of an already-built image
+... -- west flash -d build --dev-id <JLINK_SN> --no-rebuild
+```
+
+Output: VCOM0 = control messages (`Wakeword detected`), VCOM1 = Zephyr log
+(actuator events). `tools/uart_monitor.py` is a small pyserial reader/monitor.

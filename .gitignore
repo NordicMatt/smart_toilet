@@ -1,0 +1,9 @@
+# Build output
+build/
+build.log
+
+# Unzipped Edge AI model export (the .zip archive is committed instead)
+Smart_Toilet_93499_wake_word/
+
+# Local Claude Code settings
+.claude/

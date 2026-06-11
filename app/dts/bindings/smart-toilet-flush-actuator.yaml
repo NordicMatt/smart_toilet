@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Nordic Semiconductor ASA
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+
+description: |
+  Smart toilet flush actuator: a single GPIO output that drives a
+  relay or solenoid. The cell flags select the active level.
+
+compatible: "smart-toilet,flush-actuator"
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true
+    description: GPIO that drives the flush relay/solenoid.
