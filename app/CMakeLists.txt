@@ -18,11 +18,22 @@ target_sources(app PRIVATE
   src/leds.c
 
   src/ww/wakeword.c
-  src/ww/nrf_edgeai_generated/nrf_edgeai_user_model.c
 
   src/kws/kws.c
   src/kws/nrf_edgeai_generated/nrf_edgeai_user_model.c
 )
+
+# Wake word model selected via the APP_WW_MODEL Kconfig choice. Each model
+# directory carries its own nrf_edgeai_generated/ files; the include
+# directory makes wakeword.c's "nrf_edgeai_generated/..." include resolve
+# to the selected model.
+if(CONFIG_APP_WW_MODEL_SHAZAAM)
+  set(WW_MODEL_DIR src/ww/models/shazaam)
+else()
+  set(WW_MODEL_DIR src/ww/models/okay_nordic)
+endif()
+target_sources(app PRIVATE ${WW_MODEL_DIR}/nrf_edgeai_generated/nrf_edgeai_user_model.c)
+target_include_directories(app PRIVATE ${WW_MODEL_DIR})
 
 target_sources_ifdef(CONFIG_APP_AUDIO_STATS app PRIVATE src/audio_stats.c)
 target_sources_ifdef(CONFIG_APP_AUDIO_PROC app PRIVATE src/audio_proc.c)

@@ -28,6 +28,25 @@ config APP_MODE_KWS_ONLY
 
 endchoice
 
+choice APP_WW_MODEL
+	prompt "Wake word model"
+	default APP_WW_MODEL_OKAY_NORDIC
+	help
+	  Selects which generated model under src/ww/models/ is built in.
+
+config APP_WW_MODEL_SHAZAAM
+	bool "Shazaam (Edge AI Lab solution 93499)"
+	help
+	  2-syllable word; near-100% at bench distance but ~50% far-field —
+	  the leading "sh" fricative does not survive room reverb.
+
+config APP_WW_MODEL_OKAY_NORDIC
+	bool "Okay Nordic (add-on bundled model)"
+	help
+	  4-syllable phrase; ~85-90% at far-field in live testing.
+
+endchoice
+
 config WW_PROBABILITY_THRESHOLD
 	int "Wakeword probability threshold"
 	range 0 1000
