@@ -13,6 +13,7 @@
 #ifndef __CONTROL_OUTPUT_H__
 #define __CONTROL_OUTPUT_H__
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -55,6 +56,42 @@ int control_output_init(void);
  * @param message Control message to be printed.
  */
 void print_control_output(const struct control_message message);
+
+/**
+ * @brief Register a consumer for bytes received on the control UART.
+ *
+ * Enables reception; @p cb is called from interrupt context per byte.
+ *
+ * @param cb Callback invoked for every received byte.
+ * @return Operation status, 0 for success.
+ */
+int control_input_register(void (*cb)(uint8_t byte));
+
+/**
+ * @brief Enter raw binary output mode.
+ *
+ * Queued control messages are held back until @c control_output_raw_end
+ * so text cannot interleave with binary data. Blocks until an in-flight
+ * message has finished transmitting.
+ */
+void control_output_raw_begin(void);
+
+/**
+ * @brief Leave raw binary output mode and flush held-back messages.
+ */
+void control_output_raw_end(void);
+
+/**
+ * @brief Transmit a raw buffer on the control UART, blocking until sent.
+ *
+ * Only valid between @c control_output_raw_begin and
+ * @c control_output_raw_end. The buffer must stay valid for the call.
+ *
+ * @param buffer Data to transmit.
+ * @param len Number of bytes.
+ * @return Operation status, 0 for success.
+ */
+int control_output_raw_tx(const uint8_t *buffer, size_t len);
 
 #ifdef __cplusplus
 }

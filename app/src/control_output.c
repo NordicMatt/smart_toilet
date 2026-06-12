@@ -39,12 +39,30 @@ BUILD_ASSERT(CONTROL_MESSAGE_COUNT == ARRAY_SIZE(messages),
 static const struct device *uart_dev = DEVICE_DT_GET(DT_CHOSEN(ncs_control_output_uart));
 static atomic_t uart_busy;
 
+/* Raw binary mode (audio snapshot dumps): while active, queued control
+ * messages are held back so text cannot interleave with binary data, and
+ * TX completions wake the dumping thread instead of the message worker.
+ */
+static atomic_t raw_active;
+static K_SEM_DEFINE(raw_tx_sem, 0, 1);
+
+/* Single registered consumer of bytes received on the control UART. */
+static void (*input_cb)(uint8_t byte);
+static uint8_t rx_bufs[2][8];
+static uint8_t rx_buf_idx;
+
 static void uart_cb(const struct device *dev, struct uart_event *evt, void *user_data)
 {
 	int err;
 
-	if (evt->type == UART_TX_DONE) {
+	switch (evt->type) {
+	case UART_TX_DONE:
 		atomic_set(&uart_busy, false);
+
+		if (atomic_get(&raw_active)) {
+			k_sem_give(&raw_tx_sem);
+			return;
+		}
 
 		if (k_msgq_num_used_get(&control_msg_queue) == 0) {
 			return;
@@ -54,6 +72,32 @@ static void uart_cb(const struct device *dev, struct uart_event *evt, void *user
 		if (err < 0) {
 			LOG_ERR("Failed to submit work (err %d)", err);
 		}
+		break;
+
+	case UART_RX_RDY:
+		for (size_t i = 0; i < evt->data.rx.len; i++) {
+			input_cb(evt->data.rx.buf[evt->data.rx.offset + i]);
+		}
+		break;
+
+	case UART_RX_BUF_REQUEST:
+		rx_buf_idx ^= 1;
+		err = uart_rx_buf_rsp(dev, rx_bufs[rx_buf_idx], sizeof(rx_bufs[0]));
+		if (err) {
+			LOG_ERR("Failed to provide RX buffer (err %d)", err);
+		}
+		break;
+
+	case UART_RX_DISABLED:
+		err = uart_rx_enable(dev, rx_bufs[rx_buf_idx], sizeof(rx_bufs[0]),
+				     10 * USEC_PER_MSEC);
+		if (err) {
+			LOG_ERR("Failed to re-enable RX (err %d)", err);
+		}
+		break;
+
+	default:
+		break;
 	}
 }
 
@@ -66,7 +110,7 @@ static void control_output_work_handler(struct k_work *work)
 	const char *buffer = NULL;
 	size_t buffer_len = 0;
 
-	if (atomic_get(&uart_busy)) {
+	if (atomic_get(&raw_active) || atomic_get(&uart_busy)) {
 		return;
 	}
 
@@ -110,6 +154,52 @@ static void control_output_work_handler(struct k_work *work)
 	}
 
 	k_msgq_get(&control_msg_queue, &message_item, K_NO_WAIT);
+}
+
+int control_input_register(void (*cb)(uint8_t byte))
+{
+	input_cb = cb;
+
+	return uart_rx_enable(uart_dev, rx_bufs[0], sizeof(rx_bufs[0]), 10 * USEC_PER_MSEC);
+}
+
+void control_output_raw_begin(void)
+{
+	atomic_set(&raw_active, true);
+
+	/* Let an in-flight control message finish, and discard the stale
+	 * wake-up its completion posts, so binary data starts clean.
+	 */
+	while (atomic_get(&uart_busy)) {
+		k_msleep(1);
+	}
+	k_sem_reset(&raw_tx_sem);
+}
+
+void control_output_raw_end(void)
+{
+	atomic_set(&raw_active, false);
+
+	if (k_msgq_num_used_get(&control_msg_queue) > 0) {
+		(void)k_work_submit(&control_output_work);
+	}
+}
+
+int control_output_raw_tx(const uint8_t *buffer, size_t len)
+{
+	int err;
+
+	atomic_set(&uart_busy, true);
+
+	err = uart_tx(uart_dev, buffer, len, SYS_FOREVER_US);
+	if (err) {
+		atomic_set(&uart_busy, false);
+		return err;
+	}
+
+	k_sem_take(&raw_tx_sem, K_FOREVER);
+
+	return 0;
 }
 
 int control_output_init(void)
