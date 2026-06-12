@@ -30,20 +30,24 @@ endchoice
 
 choice APP_WW_MODEL
 	prompt "Wake word model"
-	default APP_WW_MODEL_OKAY_NORDIC
+	default APP_WW_MODEL_ABRACADABRA
 	help
 	  Selects which generated model under src/ww/models/ is built in.
-
-config APP_WW_MODEL_SHAZAAM
-	bool "Shazaam (Edge AI Lab solution 93499)"
-	help
-	  2-syllable word; near-100% at bench distance but ~50% far-field —
-	  the leading "sh" fricative does not survive room reverb.
+	  Longer, plosive-rich words survive far-field room reverb much
+	  better: the original 2-syllable "Shazaam" managed only ~50% at the
+	  deployment distance and was dropped.
 
 config APP_WW_MODEL_OKAY_NORDIC
 	bool "Okay Nordic (add-on bundled model)"
 	help
-	  4-syllable phrase; ~85-90% at far-field in live testing.
+	  4-syllable phrase; ~85-90% at far-field in live testing. Kept as
+	  a known-good reference model.
+
+config APP_WW_MODEL_ABRACADABRA
+	bool "Abracadabra (Edge AI Lab solution 93800)"
+	help
+	  5-syllable word, plosive-rich with alternating open vowels —
+	  ~95-100% at far-field in live testing.
 
 endchoice
 

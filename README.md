@@ -1,7 +1,7 @@
 # Smart Toilet — voice-triggered flush
 
 Voice-activated flush actuator for the **nRF54LM20 DK**, built on the nRF Edge AI
-add-on. Saying the wake word **"Shazaam"** runs a flush motor through one
+add-on. Saying the wake word **"Abracadabra"** runs a flush motor through one
 rotation and stops it at the home position via a Hall sensor.
 
 Board target: `nrf54lm20dk/nrf54lm20b/cpuapp`. App mode: `APP_MODE_WW_ONLY`.
@@ -9,10 +9,14 @@ Board target: `nrf54lm20dk/nrf54lm20b/cpuapp`. App mode: `APP_MODE_WW_ONLY`.
 ## How it works
 
 1. PDM mic (`pdm20`) captures 16 kHz audio (`src/dmic.c`).
-2. The wake-word model (Edge AI solution 93499) runs on the Axon accelerator
-   (`src/ww/`). A detection requires the per-frame probability to exceed
-   `CONFIG_WW_PROBABILITY_THRESHOLD` (0.80) for 10 of the last 20 frames, plus a
-   ~1 s refractory period so one utterance fires once.
+2. The wake-word model (Edge AI solution 93800, selectable via the
+   `APP_WW_MODEL` Kconfig choice) runs on the Axon accelerator (`src/ww/`).
+   A detection requires the per-frame probability to exceed
+   `CONFIG_WW_PROBABILITY_THRESHOLD` (0.60) for 7 of the last 20 frames, plus a
+   ~1 s refractory period so one utterance fires once. Pick wake words with
+   3+ syllables and voiced consonants: short fricative-led words (the original
+   "Shazaam") drop to ~50% detection at far-field because room reverb destroys
+   exactly the high-frequency energy they rely on.
 3. On detection, `actuator_flush()` runs the motor; it stops when the Hall
    sensor sees the shaft magnet return home (`src/actuator.c`).
 
@@ -66,7 +70,8 @@ audio: peak -4.2 dBFS, rms -21.7 dBFS, clipped 0/16000
 ww: peak prob 0.62 (bar 0.80), peak votes 4/10
 ```
 
-Say "Shazaam" from the normal use position and read the lines for that second:
+Say the wake word from the normal use position and read the lines for that
+second:
 
 - **`clipped` > 0 or peak pinned at 0.0 dBFS** → the mic is distorting; lower
   `CONFIG_APP_PDM_GAIN_DB` (0.5 dB hardware steps, range -20..+20).

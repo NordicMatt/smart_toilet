@@ -21,12 +21,12 @@ static nrf_edgeai_t *ww_model;
 
 int ww_init(void)
 {
-#ifdef CONFIG_APP_WW_MODEL_SHAZAAM
-	/* Smart toilet "Shazaam" wake word model (Edge AI Lab solution 93499). */
-	ww_model = nrf_edgeai_user_model_93499();
-#else
-	/* The add-on's bundled "Okay Nordic" wake word model. */
+#ifdef CONFIG_APP_WW_MODEL_OKAY_NORDIC
+	/* The add-on's bundled "Okay Nordic" reference wake word model. */
 	ww_model = nrf_edgeai_user_model_wakeword();
+#else
+	/* "Abracadabra" wake word model (Edge AI Lab solution 93800). */
+	ww_model = nrf_edgeai_user_model_93800();
 #endif
 	__ASSERT_NO_MSG(ww_model);
 	__ASSERT_NO_MSG(ww_model->input.window_size == DMIC_SAMPLES_IN_BLOCK);
@@ -43,7 +43,7 @@ int ww_init(void)
 
 /* After a detection, ignore further hits for this many inference frames.
  * Inference only completes every third 10 ms block (the model buffers the
- * first two), so one frame is ~30 ms and 33 frames is ~1 s. A "Shazaam"
+ * first two), so one frame is ~30 ms and 33 frames is ~1 s. A wake-word
  * utterance outlives the voting window, so without a refractory period a
  * single utterance fires several times; a tail re-fire that slips through
  * is absorbed by the actuator lockout.
