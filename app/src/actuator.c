@@ -23,6 +23,11 @@ LOG_MODULE_REGISTER(actuator);
  * an immediate false stop.
  */
 #define HALL_BLANKING_MS    250
+/* Extra run time after the magnet is sensed. The shaft is still moving when
+ * the magnet reaches the sensor, so a short overrun lets it rotate the rest
+ * of the way to the proper resting spot.
+ */
+#define HALL_OVERRUN_MS	    35
 /* Maximum motor run time. If the magnet is never sensed (jam, misaligned
  * magnet, faulty sensor) the motor is forced off so it cannot burn out.
  */
@@ -93,7 +98,9 @@ static void motor_run(void)
 		 * time the magnet reaches the sensor (the home position).
 		 */
 		if (elapsed >= HALL_BLANKING_MS && present) {
-			LOG_INF("Flush: magnet sensed at +%lld ms, motor off", elapsed);
+			LOG_INF("Flush: magnet sensed at +%lld ms, motor off after %d ms overrun",
+				elapsed, HALL_OVERRUN_MS);
+			k_msleep(HALL_OVERRUN_MS);
 			break;
 		}
 
