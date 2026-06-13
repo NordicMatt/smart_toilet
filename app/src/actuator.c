@@ -23,12 +23,19 @@ LOG_MODULE_REGISTER(actuator);
  * an immediate false stop.
  */
 #define HALL_BLANKING_MS    250
+/* Extra run time after the magnet is sensed. The shaft is still moving when
+ * the magnet reaches the sensor, so a short overrun lets it rotate the rest
+ * of the way to the proper resting spot.
+ */
+#define HALL_OVERRUN_MS	    35
 /* Maximum motor run time. If the magnet is never sensed (jam, misaligned
  * magnet, faulty sensor) the motor is forced off so it cannot burn out.
  */
 #define MOTOR_SAFETY_MS	    1000
 /* Minimum time between flushes after the motor stops. */
 #define FLUSH_LOCKOUT_MS    1000
+/* Edges on the failsafe switch within this window are contact bounce. */
+#define BUTTON_DEBOUNCE_MS  50
 
 /* P1.06: HIGH = MOSFET on = motor runs (active high). */
 static const struct gpio_dt_spec motor_gpio =
@@ -38,6 +45,10 @@ static const struct gpio_dt_spec motor_gpio =
  */
 static const struct gpio_dt_spec hall_gpio =
 	GPIO_DT_SPEC_GET(DT_NODELABEL(hall_sensor), gpios);
+/* P1.08: failsafe flush switch to GND (active low, internal pull-up). */
+static const struct gpio_dt_spec button_gpio =
+	GPIO_DT_SPEC_GET(DT_NODELABEL(flush_button), gpios);
+static struct gpio_callback button_cb;
 
 static K_SEM_DEFINE(flush_sem, 0, 1);
 static atomic_t motor_active;
@@ -87,7 +98,9 @@ static void motor_run(void)
 		 * time the magnet reaches the sensor (the home position).
 		 */
 		if (elapsed >= HALL_BLANKING_MS && present) {
-			LOG_INF("Flush: magnet sensed at +%lld ms, motor off", elapsed);
+			LOG_INF("Flush: magnet sensed at +%lld ms, motor off after %d ms overrun",
+				elapsed, HALL_OVERRUN_MS);
+			k_msleep(HALL_OVERRUN_MS);
 			break;
 		}
 
@@ -114,6 +127,24 @@ static void motor_thread_fn(void *a, void *b, void *c)
 K_THREAD_DEFINE(motor_tid, 1024, motor_thread_fn, NULL, NULL, NULL,
 		K_PRIO_PREEMPT(5), 0, 0);
 
+static void button_pressed(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
+	static int64_t last_edge;
+	const int64_t now = k_uptime_get();
+
+	if (now - last_edge < BUTTON_DEBOUNCE_MS) {
+		return;
+	}
+	last_edge = now;
+
+	LOG_INF("Failsafe switch pressed");
+	actuator_flush();
+}
+
 int actuator_init(void)
 {
 	int err;
@@ -132,6 +163,31 @@ int actuator_init(void)
 	err = gpio_pin_configure_dt(&hall_gpio, GPIO_INPUT | GPIO_PULL_UP);
 	if (err) {
 		LOG_ERR("Failed to configure Hall GPIO (err %d)", err);
+		return err;
+	}
+
+	if (!gpio_is_ready_dt(&button_gpio)) {
+		LOG_ERR("Flush switch GPIO not ready");
+		return -ENODEV;
+	}
+
+	err = gpio_pin_configure_dt(&button_gpio, GPIO_INPUT);
+	if (err) {
+		LOG_ERR("Failed to configure flush switch GPIO (err %d)", err);
+		return err;
+	}
+
+	err = gpio_pin_interrupt_configure_dt(&button_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	if (err) {
+		LOG_ERR("Failed to configure flush switch interrupt (err %d)", err);
+		return err;
+	}
+
+	gpio_init_callback(&button_cb, button_pressed, BIT(button_gpio.pin));
+
+	err = gpio_add_callback_dt(&button_gpio, &button_cb);
+	if (err) {
+		LOG_ERR("Failed to add flush switch callback (err %d)", err);
 		return err;
 	}
 
