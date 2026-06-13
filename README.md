@@ -1,5 +1,32 @@
 # Smart Toilet — voice-triggered flush
 
+> ✨ **Say "Abracadabra," and the toilet flushes.** No buttons, no app, no cloud —
+> just your voice and a little magic.
+
+## The story
+
+This started when the electronic capacitive-sensing toilets I have stopped working
+correctly, and I felt the need to fix it. I rigged them up to flush from a button
+press, monitored by an Arduino, and added a Hall effect sensor to read the motor
+shaft position so it always stops at home.
+
+I'd wanted to make it voice-activated for *years*. I tried with an nRF5340 and Edge
+Impulse and could never get it working, so I put it away and lived with the button.
+
+Then Nordic released the new **Edge AI Lab** and **Edge AI add-on**, and everything
+changed. I built this ML model in about an hour. You can too — it's genuinely that
+easy. And with the **Nordic MCP**, you can do nearly all of it without writing much
+code. Give it a try!
+
+I designed the enclosure using **Claude** and **Codex** together, iterating a few
+times until everything was the way I liked it. It's the 3D-printed "magic chest" the
+hardware lives in below.
+
+Everything here is open source. The one exception is Nordic's AI, which is licensed
+to run only on Nordic microcontrollers.
+
+---
+
 **Smart Toilet** is a voice-activated flush actuator for the **nRF54LM20 DK**, built
 on the nRF Edge AI add-on. Saying the magic word **"Abracadabra"** drives a flush
 motor through one rotation and stops it at the home position using a Hall sensor.
