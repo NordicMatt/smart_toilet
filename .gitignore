@@ -1,6 +1,15 @@
 # Build output
 build/
 build.log
+build_*/
+*.log
+
+# Python venv for nRF Cloud utils
+.venv-nrfcloud/
+
+# nRF Cloud credentials: NEVER commit private keys (CA key + device key).
+# Public certs / onboarding CSV are kept so the device can be rebuilt.
+nrfcloud_creds/*_prv.pem
 
 # Unzipped Edge AI model export (the .zip archive is committed instead)
 Smart_Toilet_93499_wake_word/
