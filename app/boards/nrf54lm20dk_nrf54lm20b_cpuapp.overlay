@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ *
+ * Smart toilet + nRF7002 EB II (Wi-Fi). The EB II occupies the P17 expansion
+ * connector; the toilet peripherals are wired to header P2 (GPIO port P1) on
+ * pins the EB II does not use. See memory smart-toilet-cloud for the pin map.
  */
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
@@ -11,26 +15,21 @@
 		ncs,control-output-uart = &uart30;
 	};
 
-	/* Smart toilet flush motor drive on P1.06: HIGH turns on the MOSFET
-	 * that runs the motor. P1.06 is a plain GPIO routed directly to
-	 * headers P1/P17 (no board-controller mux). NOTE: the P2.00-P2.05
-	 * pins are NOT usable as header GPIO by default - the board
-	 * controller routes them to the onboard QSPI flash, so a wire on the
-	 * P2.00 header pin sees nothing.
+	/* Flush motor drive on P1.06 (active high = MOSFET on). P1.06 is not
+	 * used by the EB II and is broken out on header P2.
 	 */
 	flush_actuator: flush-actuator {
 		compatible = "smart-toilet,flush-actuator";
 		gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
 	};
 
-	/* Hall effect sensor on P1.07: powered from 5V, the sensor idles HIGH
-	 * (~3.6 V) and pulls the line LOW when the shaft magnet reaches it
-	 * (active low - verified with a meter: present ~0 V, absent ~3.6 V).
-	 * Internal pull-up is enabled in software.
+	/* Hall sensor moved to P1.07 -> P1.12: P1.07 is the EB II coexistence
+	 * GRANT pad, so the Hall sensor now uses free GPIO P1.12 (header P2).
+	 * Powered from 5V; idles HIGH, pulls LOW when the magnet is present.
 	 */
 	hall_sensor: hall-sensor {
 		compatible = "smart-toilet,hall-sensor";
-		gpios = <&gpio1 7 GPIO_ACTIVE_LOW>;
+		gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
 	};
 };
 
@@ -39,10 +38,13 @@
 };
 
 &pinctrl {
+	/* PDM mic moved off P1.04/P1.05 (EB II BUCKEN/IRQ) to P1.10/P1.11
+	 * (header P2). CLK -> P1.10, DIN -> P1.11.
+	 */
 	pdm20_default_alt: pdm20_default_alt {
 		group1 {
-			psels = <NRF_PSEL(PDM_CLK, 1, 4)>,
-				<NRF_PSEL(PDM_DIN, 1, 5)>;
+			psels = <NRF_PSEL(PDM_CLK, 1, 10)>,
+				<NRF_PSEL(PDM_DIN, 1, 11)>;
 		};
 	};
 };

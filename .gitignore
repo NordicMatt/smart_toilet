@@ -16,3 +16,6 @@ Smart_Toilet_93499_wake_word/
 
 # Local Claude Code settings
 .claude/
+
+# Compiled-in nRF Cloud device private key (secret)
+app/certs/private-key.pem
