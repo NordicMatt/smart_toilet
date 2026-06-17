@@ -21,8 +21,8 @@ static nrf_edgeai_t *ww_model;
 
 int ww_init(void)
 {
-	/* Smart toilet "Shazaam" wake word model (Edge AI Lab solution 93499). */
-	ww_model = nrf_edgeai_user_model_93499();
+	/* Smart toilet "abracadabra" wake word model (Edge AI Lab solution 93800). */
+	ww_model = nrf_edgeai_user_model_93800();
 	__ASSERT_NO_MSG(ww_model);
 	__ASSERT_NO_MSG(ww_model->input.window_size == DMIC_SAMPLES_IN_BLOCK);
 
@@ -37,7 +37,7 @@ int ww_init(void)
 }
 
 /* After a detection, ignore further hits for this many 10 ms frames (~1 s).
- * A "Shazaam" utterance is longer than the voting window, so without a
+ * An "abracadabra" utterance is longer than the voting window, so without a
  * refractory period a single utterance fires several times.
  */
 #define WW_REFRACTORY_FRAMES 100

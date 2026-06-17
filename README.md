@@ -1,7 +1,7 @@
 # Smart Toilet — voice-triggered flush
 
 Voice-activated flush actuator for the **nRF54LM20 DK**, built on the nRF Edge AI
-add-on. Saying the wake word **"Shazaam"** runs a flush motor through one
+add-on. Saying the wake word **"abracadabra"** runs a flush motor through one
 rotation and stops it at the home position via a Hall sensor.
 
 Board target: `nrf54lm20dk/nrf54lm20b/cpuapp`. App mode: `APP_MODE_WW_ONLY`.
@@ -9,7 +9,7 @@ Board target: `nrf54lm20dk/nrf54lm20b/cpuapp`. App mode: `APP_MODE_WW_ONLY`.
 ## How it works
 
 1. PDM mic (`pdm20`) captures 16 kHz audio (`src/dmic.c`).
-2. The wake-word model (Edge AI solution 93499) runs on the Axon accelerator
+2. The wake-word model (Edge AI solution 93800) runs on the Axon accelerator
    (`src/ww/`). A detection requires the per-frame probability to exceed
    `CONFIG_WW_PROBABILITY_THRESHOLD` (0.80) for 10 of the last 20 frames, plus a
    ~1 s refractory period so one utterance fires once.
