@@ -10,6 +10,7 @@
 #include <zephyr/sys/atomic.h>
 
 #include "actuator.h"
+#include "cloud.h"
 
 LOG_MODULE_REGISTER(actuator);
 
@@ -97,6 +98,9 @@ static void motor_run(void)
 	(void)gpio_pin_set_dt(&motor_gpio, 0);
 	lockout_until = k_uptime_get() + FLUSH_LOCKOUT_MS;
 	atomic_set(&motor_active, 0);
+
+	/* Report the completed flush to nRF Cloud (non-blocking). */
+	cloud_report_flush();
 }
 
 static void motor_thread_fn(void *a, void *b, void *c)

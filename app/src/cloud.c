@@ -12,14 +12,19 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/net/coap.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_mgmt.h>
+#include <zephyr/settings/settings.h>
+#include <zephyr/sys/atomic.h>
 
+#include <cJSON.h>
 #include <date_time.h>
 #include <net/nrf_cloud_coap.h>
 
+#include "actuator.h"
 #include "cloud.h"
 
 LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
@@ -27,15 +32,120 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 #define L4_EVENT_MASK (NET_EVENT_L4_CONNECTED | NET_EVENT_L4_DISCONNECTED)
 #define DATE_TIME_TIMEOUT_S 30
 #define RECONNECT_DELAY_S   30
+/* How often, while idle and connected, to poll the shadow for a remote-flush
+ * command. CoAP is client-driven, so remote control is poll-based.
+ */
+#define REMOTE_POLL_S	    15
+
+/* nRF Cloud appId for the flush telemetry messages. */
+#define FLUSH_APP_ID	    "FLUSH"
+/* Persisted total flush count: settings key "toilet/flush_count". */
+#define FLUSH_COUNT_KEY	    "toilet/flush_count"
 
 static K_SEM_DEFINE(network_ready_sem, 0, 1);
 static K_SEM_DEFINE(date_time_ready_sem, 0, 1);
+/* Given each time a flush occurs to wake the cloud thread for reporting. */
+static K_SEM_DEFINE(flush_event_sem, 0, 1);
 static struct net_mgmt_event_callback l4_cb;
 static atomic_t connected = ATOMIC_INIT(0);
+/* Flushes that have happened but not yet been reported to the cloud. */
+static atomic_t flush_pending = ATOMIC_INIT(0);
+/* Total lifetime flush count, persisted in NVS via the settings subsystem. */
+static uint32_t flush_count;
 
 bool cloud_is_connected(void)
 {
 	return atomic_get(&connected) == 1;
+}
+
+void cloud_report_flush(void)
+{
+	atomic_inc(&flush_pending);
+	k_sem_give(&flush_event_sem);
+}
+
+static int toilet_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+			       void *cb_arg)
+{
+	if (settings_name_steq(name, "flush_count", NULL) && len == sizeof(flush_count)) {
+		return read_cb(cb_arg, &flush_count, sizeof(flush_count)) < 0 ? -EIO : 0;
+	}
+
+	return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(toilet, "toilet", NULL, toilet_settings_set, NULL, NULL);
+
+/* Report any pending flush events (one device message each) and push the
+ * latest flush count to the device shadow. Runs only on the cloud thread.
+ */
+static void report_flushes(void)
+{
+	while (atomic_get(&flush_pending) > 0) {
+		atomic_dec(&flush_pending);
+		flush_count++;
+		(void)settings_save_one(FLUSH_COUNT_KEY, &flush_count, sizeof(flush_count));
+
+		int64_t ts = 0;
+		(void)date_time_now(&ts);
+
+		int err = nrf_cloud_coap_sensor_send(FLUSH_APP_ID, (double)flush_count,
+						     ts > 0 ? ts : 0, false);
+		if (err) {
+			LOG_WRN("Flush event send failed (err %d)", err);
+		} else {
+			LOG_INF("Reported flush #%u to nRF Cloud", flush_count);
+		}
+	}
+
+	char json[40];
+
+	(void)snprintk(json, sizeof(json), "{\"flushCount\":%u}", flush_count);
+
+	int err = nrf_cloud_coap_shadow_state_update(json);
+
+	if (err) {
+		LOG_WRN("Shadow flushCount update failed (err %d)", err);
+	}
+}
+
+/* Poll the shadow delta for a remote flush command: {"flush": true}. On
+ * receipt, trigger a flush and reconcile the shadow so the delta clears.
+ */
+static void poll_remote_flush(void)
+{
+	static char buf[256];
+	size_t len = sizeof(buf);
+
+	int err = nrf_cloud_coap_shadow_get(buf, &len, true, COAP_CONTENT_FORMAT_APP_JSON);
+
+	if (err || len == 0) {
+		return;
+	}
+
+	buf[MIN(len, sizeof(buf) - 1)] = '\0';
+
+	cJSON *root = cJSON_Parse(buf);
+
+	if (!root) {
+		return;
+	}
+
+	/* The flush flag may arrive at the top level or nested under "state". */
+	cJSON *scope = cJSON_GetObjectItem(root, "state");
+
+	cJSON *flush = cJSON_GetObjectItem(scope ? scope : root, "flush");
+
+	if (cJSON_IsTrue(flush)) {
+		LOG_INF("Remote flush command received from nRF Cloud");
+		actuator_flush();
+		/* Match reported to desired so the delta is cleared. Toggle the
+		 * desired flag in the portal to issue another remote flush.
+		 */
+		(void)nrf_cloud_coap_shadow_state_update("{\"flush\":true}");
+	}
+
+	cJSON_Delete(root);
 }
 
 static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
@@ -75,6 +185,11 @@ static void cloud_thread_fn(void)
 		return;
 	}
 
+	/* Restore the persisted lifetime flush count from NVS. */
+	(void)settings_subsys_init();
+	(void)settings_load_subtree("toilet");
+	LOG_INF("Flush count restored: %u", flush_count);
+
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
 	net_mgmt_add_event_callback(&l4_cb);
 	date_time_register_handler(date_time_evt_handler);
@@ -108,11 +223,18 @@ static void cloud_thread_fn(void)
 		LOG_INF("Connected to nRF Cloud");
 		atomic_set(&connected, 1);
 
-		/* Stay connected. Flush reporting / shadow polling is added in
-		 * step 2; for now just hold the connection open.
+		/* Push the current flush count to the shadow on (re)connect, then
+		 * service flush events as they occur and poll for remote-flush
+		 * commands while idle.
 		 */
+		report_flushes();
+
 		while (atomic_get(&connected) == 1) {
-			k_sleep(K_SECONDS(60));
+			if (k_sem_take(&flush_event_sem, K_SECONDS(REMOTE_POLL_S)) == 0) {
+				report_flushes();
+			} else {
+				poll_remote_flush();
+			}
 		}
 
 		LOG_INF("Disconnected; will re-establish when network returns");
