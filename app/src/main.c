@@ -13,6 +13,7 @@
 #include <zephyr/logging/log.h>
 
 #include "actuator.h"
+#include "cloud.h"
 #include "control_output.h"
 #include "dmic.h"
 #include "kws/kws.h"
@@ -143,6 +144,18 @@ int main(void)
 	}
 
 	LOG_INF("Initialization completed, check output on VCOM0");
+
+	/* Do not start audio capture / wake-word inference until nRF Cloud is
+	 * connected: bring Wi-Fi up and establish the cloud connection first,
+	 * then begin listening. This keeps the memory-intensive DTLS handshake /
+	 * JWT signing from competing with the DMIC + edge-AI inference for CPU
+	 * and the DMIC buffer slab during bring-up.
+	 */
+	LOG_INF("Waiting for nRF Cloud connection before starting audio...");
+	while (!cloud_is_connected()) {
+		k_sleep(K_SECONDS(1));
+	}
+	LOG_INF("nRF Cloud connected; starting audio capture");
 
 	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
 	if (err < 0) {
