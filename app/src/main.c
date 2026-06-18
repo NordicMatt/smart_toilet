@@ -138,9 +138,15 @@ int main(void)
 		return err;
 	}
 
-	err = kws_init();
-	if (err) {
-		return err;
+	/* The keyword-spotting stage (and its ~26 KB model) is only needed in the
+	 * KWS modes. In WW-only mode it is neither initialised nor linked (see
+	 * CMakeLists.txt), saving the RAM.
+	 */
+	if (!IS_ENABLED(CONFIG_APP_MODE_WW_ONLY)) {
+		err = kws_init();
+		if (err) {
+			return err;
+		}
 	}
 
 	LOG_INF("Initialization completed, check output on VCOM0");
