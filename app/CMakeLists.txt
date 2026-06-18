@@ -28,7 +28,11 @@ target_sources(app PRIVATE
 
   src/ww/wakeword.c
   src/ww/nrf_edgeai_generated/nrf_edgeai_user_model.c
+)
 
+# The keyword-spotting stage and its model (~26 KB RAM) are only built for the
+# KWS modes. The smart toilet runs APP_MODE_WW_ONLY, so they are omitted.
+target_sources_ifndef(CONFIG_APP_MODE_WW_ONLY app PRIVATE
   src/kws/kws.c
   src/kws/nrf_edgeai_generated/nrf_edgeai_user_model.c
 )

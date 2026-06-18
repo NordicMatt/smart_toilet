@@ -294,7 +294,9 @@ static void cloud_thread_fn(void)
 	}
 }
 
-/* The DTLS handshake (cert-chain verification + ECDSA JWT signing) is very
- * stack-hungry, so this thread needs a large stack.
+/* Runs the DTLS handshake + ECDSA JWT signing and the cJSON shadow/message
+ * encoding. 6 KB is comfortable (the nRF Cloud sample does the same work on a
+ * ~4.5 KB connection thread); the earlier 16 KB was over-provisioned while
+ * chasing what turned out to be a heap-collision bug, not a stack overflow.
  */
-K_THREAD_DEFINE(cloud_tid, 16384, cloud_thread_fn, NULL, NULL, NULL, 7, 0, 0);
+K_THREAD_DEFINE(cloud_tid, 6144, cloud_thread_fn, NULL, NULL, NULL, 7, 0, 0);
