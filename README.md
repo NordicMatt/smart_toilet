@@ -1,6 +1,6 @@
 # Smart Toilet — voice-triggered flush
 
-> ✨ **Say "Abracadabra," and the toilet flushes.** No buttons, no app, no cloud —
+> ✨ **Say "Abracadabra," and the toilet flushes.** No buttons, no app —
 > just your voice and a little magic.
 
 ## The story
@@ -31,12 +31,14 @@ to run only on Nordic microcontrollers.
 on the nRF Edge AI add-on. Saying the magic word **"Abracadabra"** drives a flush
 motor through one rotation and stops it at the home position using a Hall sensor.
 
-Detection runs fully on-device on the Axon AI accelerator — there is no network
-connection and no audio leaves the board. The application runs in **wake-word-only
-mode**: it listens continuously for the single phrase "Abracadabra" and has no
-keyword-spotting stage.
+Wake-word detection runs fully on-device on the Axon AI accelerator — **no audio
+ever leaves the board.** With the **nRF7002 EB II** Wi-Fi shield the device also
+connects to **nRF Cloud** (CoAP) to report flush events, keep a flush-count shadow,
+and accept a remote flush, and runs **Memfault** for crash/metric monitoring
+(forwarded through nRF Cloud). The application runs in **wake-word-only mode**.
 
-- Board target: `nrf54lm20dk/nrf54lm20b/cpuapp`
+- Board target: `nrf54lm20dk/nrf54lm20b/cpuapp` (secure, no TF-M)
+- Wi-Fi shield: `nrf7002eb2` (on the P17 expansion connector)
 - Application mode: `APP_MODE_WW_ONLY`
 - Wake word: "Abracadabra" (`APP_WW_MODEL_ABRACADABRA`)
 
@@ -63,6 +65,10 @@ The hardware lives in a 3D-printed "magic chest" enclosure (sources in
 4. On detection, `actuator_flush()` runs the motor and stops it when the Hall
    sensor sees the shaft magnet return home (`src/actuator.c`). LED0 blinks for
    one second and `Wakeword detected` is printed on the control UART (VCOM0).
+5. In parallel, `src/cloud.c` brings up Wi-Fi, connects to nRF Cloud, reports each
+   flush, and forwards Memfault data. Audio capture only starts **after** the
+   cloud connection is up, so the DTLS/JWT bring-up never competes with the
+   wake-word inference for CPU and DMIC buffers.
 
 **Why "Abracadabra":** wake words with more syllables and plosive consonants
 survive far-field room reverb far better. The original 2-syllable "Shazaam"
@@ -85,11 +91,7 @@ in order:
 3. **Automatic gain control (AGC)** — `CONFIG_APP_AGC` tracks the speech peak
    envelope and applies a smoothed software gain (±12 dB) that pulls speech
    toward `CONFIG_APP_AGC_TARGET_DBFS` (**−20 dBFS**), so detection is far less
-   sensitive to how far the speaker is from the mic. It uses a fast ~50 ms
-   release downward (to step away from saturation quickly) and a slow ~300 ms
-   attack upward (so converging gain does not warp a word mid-utterance), and is
-   gated below −38 dBFS so it rides utterance peaks instead of pumping the room
-   noise floor.
+   sensitive to how far the speaker is from the mic.
 
 The AGC acts *after* the PDM hardware gain, so it cannot undo saturation that
 already happened in the peripheral — keep `APP_PDM_GAIN_DB` low enough that close
@@ -98,16 +100,23 @@ audio). See [Tuning the mic and wake word](#tuning-the-mic-and-wake-word).
 
 ## Hardware / pinout
 
+The EB II mounts on the **P17** expansion connector and claims several pins, so the
+toilet peripherals live on header **P2** (GPIO port P1):
+
 | Signal      | Pin   | Notes |
 |-------------|-------|-------|
 | Motor drive | P1.06 | Active-high → logic-level MOSFET gate |
-| Hall sensor | P1.07 | Active-low, internal pull-up; **power the sensor from 5 V** (DK headers P6–P10/P18 pin 1) |
-| PDM mic CLK | P1.04 | Adafruit 3492 (ST MP34DT01-M) |
-| PDM mic DAT | P1.05 | mic SEL→GND (left channel), VDD→1.8 V IO |
+| Hall sensor | P1.12 | Active-low, internal pull-up; **power the sensor from 5 V** (DK headers P6–P10/P18 pin 1) |
+| PDM mic CLK | P1.14 | Adafruit 3492 (ST MP34DT01-M) |
+| PDM mic DAT | P1.15 | mic SEL→GND (left channel), VDD→IO rail |
+| Wi-Fi       | P17   | nRF7002 EB II — don't wire anything else here |
 
-> **Do not use P2.00–P2.05** as header GPIO on this DK: the board controller mux
-> routes them to the onboard QSPI flash, so the header pins are dead by default.
-> P1/P3 pins are plain GPIO and work directly.
+> **Keep all peripheral wires off the `P1` connector block** — that block carries
+> GPIO port P0, including the console UART (`P0.06`/`P0.07`). A stray wire there
+> makes the console go silent for any firmware.
+>
+> **Do not use P2.00–P2.05** as header GPIO: the board controller mux routes them
+> to the onboard QSPI flash, so the header pins are dead by default.
 
 ### Wiring
 
@@ -120,9 +129,11 @@ audio). See [Tuning the mic and wake word](#tuning-the-mic-and-wake-word).
 
  5V0 (P6..P18 pin 1) ──► Hall VCC      Hall switch, magnet on the motor shaft
  GND ─────────────────► Hall GND
- P1.07 ◄──────────────── Hall OUT      idles ~3.6 V, pulls to 0 V when magnet present
+ P1.12 ◄──────────────── Hall OUT      idles ~3.6 V, pulls to 0 V when magnet present
 
- P1.04 ──► mic CLK   P1.05 ◄── mic DAT   Adafruit 3492 (SEL→GND, VDD→1.8 V IO)
+ P1.14 ──► mic CLK   P1.15 ◄── mic DAT   Adafruit 3492 (SEL→GND, VDD→IO rail)
+
+ P17 expansion connector ◄───────────► nRF7002 EB II (Wi-Fi)
 ```
 
 Keep all grounds common (DK GND, motor-supply GND, Hall GND). The Hall idles at
@@ -136,22 +147,62 @@ In `src/actuator.c`:
 - `HALL_BLANKING_MS` (250) ignores the Hall sensor right after start — the magnet
   rests on the sensor at home, so without blanking, start-up jitter would end the
   flush immediately.
-- `HALL_OVERRUN_MS` (100) keeps the motor running briefly *after* the magnet is
-  sensed, letting the shaft settle into its resting position. Tune this for a
-  clean stop.
 - `MOTOR_SAFETY_MS` (1000) forces the motor off if the magnet is never sensed
   (jam, misaligned magnet, faulty sensor) so it cannot burn out. One rotation is
   ≈ 700 ms.
 
+## Wi-Fi
+
+Connectivity comes from the **nRF7002 EB II** on P17. `src/cloud.c` uses `conn_mgr`
+to bring the interface up and connect, then obtains time over NTP before connecting
+to the cloud. The app connects with Wi-Fi credentials stored in NVS (Zephyr
+`wifi_credentials`); provision them with the `wifi cred add -s "<SSID>" -k <keymgmt>
+-p "<PASSWORD>"` shell command (on a build with `CONFIG_SHELL`) or compiled-in
+static `CONFIG_WIFI_CREDENTIALS_STATIC_SSID`/`_PASSWORD`. Credentials persist across
+reboots and a `west flash` without `--erase`.
+
+## nRF Cloud (CoAP)
+
+Transport is **CoAP**; the device authenticates with a per-device JWT (APP_JWT). The
+CA + device cert/key are compiled in (`CONFIG_NRF_CLOUD_PROVISION_CERTIFICATES=y`,
+C-string headers in `app/certs/`, sec tag 16842753), and the device ID is the
+hardware ID (`CONFIG_NRF_CLOUD_CLIENT_ID_SRC_HW_ID`). Onboard the device to your
+nRF Cloud account once with [`nrfcloud-utils`](https://pypi.org/project/nrfcloud-utils/)
+(`create_ca_cert` → `device_credentials_installer` → `nrf_cloud_onboard`).
+
+What it reports / accepts (`src/cloud.c`):
+
+- **Flush event** — each completed flush is sent as a `FLUSH` device message
+  (`nrf_cloud_coap_sensor_send`), value = the running flush count.
+- **Flush count shadow** — the lifetime count is pushed to the device shadow
+  (`{"flushCount":N}`) and persisted in NVS (`toilet/flush_count`), so it is
+  restored and re-reported after a reboot.
+- **Remote flush** — the device polls the shadow delta every 15 s; setting the
+  desired state `{"flush": true}` in the portal triggers `actuator_flush()`.
+
+## Memfault
+
+`CONFIG_MEMFAULT=y` captures coredumps (RAM-backed, surviving the warm reset that
+`CONFIG_RESET_ON_FATAL_ERROR=y` performs after a fault), reboot reasons, and metrics,
+plus a GNU build ID for symbolication. The Memfault device serial is the same
+hardware ID as the nRF Cloud device.
+
+Memfault data is **forwarded through nRF Cloud** — `src/cloud.c` drains the Memfault
+packetizer and POSTs chunks to nRF Cloud's `chunks` CoAP resource over the existing
+connection (the built-in `MEMFAULT_USE_NRF_CLOUD_COAP` path assumes a cellular modem,
+so we do it ourselves). No device-side project key is needed. One-time cloud setup:
+link your nRF Cloud account to a Memfault project, and upload the ELF
+(`build/app/zephyr/zephyr.elf`) under **Software → Symbol Files** so coredumps
+symbolicate (matched by the GNU build ID logged at boot, `mflt: GNU Build ID: …`).
+
 ## Tuning the mic and wake word
 
-With `CONFIG_APP_AUDIO_STATS=y` (on by default in `prj.conf`), the log UART
-(VCOM1) prints one line of each per second:
+With `CONFIG_APP_AUDIO_STATS=y` (on by default in `prj.conf`), the log — on **VCOM0**
+with the shield (it disables VCOM1) — prints one line of each per second:
 
 ```
 audio: peak -4.2 dBFS, rms -21.7 dBFS, clipped 0/16000
-agc: gain +6.0 dB (env -18.4 dBFS)
-ww: peak prob 0.62 (bar 0.80), peak votes 4/10
+ww: peak prob 0.62 (bar 0.60), peak votes 4/7
 ```
 
 Say the wake word from the normal use position and read the lines for that second:
@@ -166,68 +217,69 @@ Say the wake word from the normal use position and read the lines for that secon
   are too spread out; lower `CONFIG_WW_COUNT_THRESHOLD` or raise
   `CONFIG_WW_HISTORY_SIZE`.
 
-Aim for speech peaks around −6 to −3 dBFS with zero clipped samples, then tune the
-thresholds. Set `CONFIG_APP_AUDIO_STATS=n` for the deployed build.
-
-### Recording what the model hears
-
-With `CONFIG_APP_AUDIO_SNAP=y`, send `S` on the control UART (VCOM0) to record
-10 s of the processed mic audio and dump it back over VCOM0. Save it as a `.wav`
-with `tools/uart_monitor.py snap --port <VCOM0>`.
+Set `CONFIG_APP_AUDIO_STATS=n` for the deployed build. (The `CONFIG_APP_AUDIO_SNAP`
+audio-recording feature is **disabled in the Wi-Fi build** — its multi-second
+capture buffer does not fit alongside the Wi-Fi/cloud/Memfault stacks, and its raw
+UART dump conflicts with the shield's VCOM0 console.)
 
 ## Build & flash
 
-Built against the nRF Edge AI add-on, which bundles its own nrf/zephyr. The
-simplest path is a plain NCS install (v3.3.1 works) with the add-on passed as an
-extra Zephyr module. Fetch the add-on once (no `west update` needed):
-
-```sh
-west init -m https://github.com/nrfconnect/sdk-edge-ai --manifest-rev v2.1.0 <addon-dir>
-```
-
-Then build, pointing at the add-on module:
+Built against an NCS **v3.3.1** tree with the nRF Edge AI add-on passed as extra
+Zephyr modules, the Wi-Fi shield, and the cloud config overlay:
 
 ```sh
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
-  west build -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
-    -DEXTRA_ZEPHYR_MODULES=<addon-dir>/edge-ai
+  west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
+    -DSHIELD=nrf7002eb2 \
+    -DEXTRA_CONF_FILE=app/cloud.conf \
+    -DZEPHYR_EXTRA_MODULES="<addon>/edge-ai;<addon>/modules/edge-impulse-sdk-zephyr"
 ```
 
-Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached):
+Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached; add
+`--erase` when the partition layout changed, e.g. switching from a TF-M /ns image):
 
 ```sh
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 -- \
   west flash -d build --dev-id <JLINK_SN>
 ```
 
-> If `west flash` reports *"JLinkARM DLL not found"* but J-Link is installed in a
-> non-standard location, program directly and point nrfutil at the DLL:
-> `nrfutil device program --firmware build/app/zephyr/zephyr.hex --jlink-dll
-> <path>/libjlinkarm.so --serial-number <SN>`, then `nrfutil device reset`.
+Footprint: FLASH ~45 %, RAM ~76 % of the nRF54LM20B.
 
 ### Output
 
-- **VCOM0** — control messages: `Waiting for wakeword`, `Wakeword detected`.
-- **VCOM1** — Zephyr log: actuator events plus the per-second audio/AGC/wake-word
-  tuning stats when `CONFIG_APP_AUDIO_STATS=y`.
+With the EB II shield the application console (logs **and** any shell) is on **VCOM0**
+(UART30); VCOM1 is disabled by the shield. Use the lower-numbered `ttyACM`/COM port.
+`tools/uart_monitor.py` is a small pyserial reader/monitor. Representative lines:
 
-`tools/uart_monitor.py` is a small pyserial reader/monitor for both ports.
+```
+cloud: Connected to nRF Cloud
+main: nRF Cloud connected; starting audio capture
+Waiting for wakeword
+Wakeword detected
+cloud: Reported flush #1 to nRF Cloud
+cloud: Memfault chunk uploaded (2.01)
+```
 
 ## Notes / lessons learned
 
-- **P2.00–P2.05 are not usable as header GPIO** on this DK — the board controller
-  routes them to the onboard QSPI flash. Disabling the flash in the devicetree
-  does *not* reconnect the header pin; the SoC pin never reaches it. Use P1/P3
-  GPIO instead.
-- **Power the Hall sensor from 5 V.** On the 3 V rail it was below its minimum
-  supply and never asserted. The output is **active-low** (0 V present, 3.6 V
-  absent) — verify polarity with a meter rather than assuming.
-- The flush stop uses a **blanking window**, not a leave-then-return state
-  machine: at rest the magnet sits on the sensor, and jitter as it leaves would
-  otherwise fire a false "rotation complete" within tens of milliseconds.
-- **Pick a long, plosive-rich wake word.** Short fricative-led words lose exactly
-  the high-frequency energy that room reverb destroys, so they collapse at
-  far-field. See the `APP_WW_MODEL` choice for measured detection rates.
+- **Keep mic/motor/Hall wires on the `P2` connector block, not `P1`.** The console
+  UART (`P0.06`/`P0.07`) is on the `P1` block; a stray wire there makes the console
+  go silent for any firmware.
+- **P2.00–P2.05 are not usable as header GPIO** — the board controller routes them
+  to the onboard QSPI flash; disabling the flash in devicetree does not reconnect
+  the header pin.
+- **Power the Hall sensor from 5 V.** On the 3 V rail it never asserted. The output
+  is **active-low** — verify polarity with a meter.
+- The flush stop uses a **blanking window**, not a leave-then-return state machine,
+  because the magnet rests on the sensor at home.
+- **Pick a long, plosive-rich wake word.** Short fricative-led words lose the
+  high-frequency energy room reverb destroys. See the `APP_WW_MODEL` choice.
+- **Single, bounded heap:** the app uses newlib (required by Edge AI) while the Wi-Fi
+  supplicant force-selects `COMMON_LIBC_MALLOC`; both default to a heap at `_end` and
+  collide. `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE` is fixed so the common heap is a
+  static buffer and newlib's `_sbrk` heap gets the region above `_end`.
+- **The onboard J-Link can wedge** (VCOM silent / `west flash` J-Link DLL error /
+  `Unknown part number 0x33`). Retry `west flash` 1–3×; replug USB if it stays stuck.
 - With two DKs attached, always pass `--dev-id <JLINK_SN>` to `west flash`.
 
 ## License
