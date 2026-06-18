@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Nordic Semiconductor ASA
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+
+description: |
+  Smart toilet failsafe flush switch. Closing the switch asserts the line
+  (active low against an internal pull-up) and triggers a flush directly,
+  bypassing the voice pipeline.
+
+compatible: "smart-toilet,flush-button"
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true
+    description: GPIO connected to the flush switch.

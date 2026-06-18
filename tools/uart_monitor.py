@@ -183,6 +183,58 @@ def cmd_write(args: argparse.Namespace) -> None:
         ser.close()
 
 
+def cmd_snap(args: argparse.Namespace) -> None:
+    """Trigger an audio snapshot on the device and save it as a WAV file.
+
+    Sends the trigger byte ``S`` on the control UART, waits for the
+    ``AUDIO_SNAP <bytes>`` header (skipping any interleaved control
+    messages), reads the raw 16-bit little-endian PCM payload, and writes
+    it to a mono WAV file.
+
+    :param args: Parsed CLI arguments with attributes ``port`` (str),
+        ``baud`` (int), ``out`` (str | None), ``rate`` (int), and
+        ``wait`` (float).
+    """
+    import time
+    import wave
+
+    out = args.out or time.strftime("snapshot_%Y%m%d_%H%M%S.wav")
+    ser = _open_port(args.port, args.baud, timeout=2.0)
+    try:
+        ser.reset_input_buffer()
+        ser.write(b"S")
+        ser.flush()
+        print("[UART] Snapshot triggered, recording + dump in progress...", file=sys.stderr)
+
+        deadline = time.time() + args.wait
+        nbytes = None
+        while time.time() < deadline:
+            line = ser.readline().strip()
+            if line.startswith(b"AUDIO_SNAP "):
+                nbytes = int(line.split()[1])
+                break
+        if nbytes is None:
+            sys.exit("Timed out waiting for AUDIO_SNAP header")
+
+        print(f"[UART] Receiving {nbytes} bytes...", file=sys.stderr)
+        data = bytearray()
+        while len(data) < nbytes and time.time() < deadline:
+            chunk = ser.read(min(65536, nbytes - len(data)))
+            if chunk:
+                data.extend(chunk)
+        if len(data) < nbytes:
+            sys.exit(f"Short read: {len(data)}/{nbytes} bytes")
+
+        with wave.open(out, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(args.rate)
+            wav.writeframes(bytes(data))
+        print(f"[UART] Wrote {out} ({nbytes // 2 / args.rate:.1f} s @ {args.rate} Hz)", file=sys.stderr)
+    finally:
+        ser.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with all subcommands.
 
@@ -226,6 +278,22 @@ def build_parser() -> argparse.ArgumentParser:
         help=r"Line ending appended to each sent line (default: \r\n)",
     )
     monitor_p.set_defaults(func=cmd_monitor)
+
+    snap_p = sub.add_parser(
+        "snap",
+        parents=[shared],
+        help="Trigger an audio snapshot on the device and save it as a WAV file",
+    )
+    snap_p.add_argument("--out", default=None, help="Output .wav path (default: snapshot_<timestamp>.wav)")
+    snap_p.add_argument("--rate", type=int, default=16000, help="Sample rate of the stream (default: 16000)")
+    snap_p.add_argument(
+        "--wait",
+        type=float,
+        default=90,
+        metavar="SECONDS",
+        help="Overall timeout covering recording and dump (default: 90)",
+    )
+    snap_p.set_defaults(func=cmd_snap)
 
     return parser
 

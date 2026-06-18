@@ -13,6 +13,9 @@
 #include <zephyr/logging/log.h>
 
 #include "actuator.h"
+#include "audio_proc.h"
+#include "audio_snap.h"
+#include "audio_stats.h"
 #include "cloud.h"
 #include "control_output.h"
 #include "dmic.h"
@@ -43,6 +46,10 @@ static int ww_loop(void)
 			LOG_ERR("Failed to read from DMIC (err %d)", err);
 			return err;
 		}
+
+		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
+		audio_snap_feed(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
+		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
 		err = ww_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &ww_detected);
 		if (err == -EBUSY) {
@@ -84,6 +91,10 @@ static int kws_loop(void)
 			LOG_ERR("Failed to read from DMIC (err %d)", err);
 			return err;
 		}
+
+		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
+		audio_snap_feed(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
+		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
 		err = kws_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &prediction);
 		if (err == -EBUSY) {
@@ -128,6 +139,11 @@ int main(void)
 		return err;
 	}
 
+	err = audio_snap_init();
+	if (err) {
+		return err;
+	}
+
 	err = actuator_init();
 	if (err) {
 		return err;
@@ -139,8 +155,8 @@ int main(void)
 	}
 
 	/* The keyword-spotting stage (and its ~26 KB model) is only needed in the
-	 * KWS modes. In WW-only mode it is neither initialised nor linked (see
-	 * CMakeLists.txt), saving the RAM.
+	 * KWS modes; in WW-only mode it is neither initialised nor linked
+	 * (see CMakeLists.txt), saving the RAM the cloud/Memfault stack needs.
 	 */
 	if (!IS_ENABLED(CONFIG_APP_MODE_WW_ONLY)) {
 		err = kws_init();
@@ -151,11 +167,9 @@ int main(void)
 
 	LOG_INF("Initialization completed, check output on VCOM0");
 
-	/* Do not start audio capture / wake-word inference until nRF Cloud is
-	 * connected: bring Wi-Fi up and establish the cloud connection first,
-	 * then begin listening. This keeps the memory-intensive DTLS handshake /
-	 * JWT signing from competing with the DMIC + edge-AI inference for CPU
-	 * and the DMIC buffer slab during bring-up.
+	/* Bring up Wi-Fi + nRF Cloud first, then start audio capture, so the
+	 * memory-intensive DTLS/JWT handshake does not compete with the DMIC and
+	 * edge-AI inference during connect.
 	 */
 	LOG_INF("Waiting for nRF Cloud connection before starting audio...");
 	while (!cloud_is_connected()) {

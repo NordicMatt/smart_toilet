@@ -1,65 +1,64 @@
-.. _app_ww_kws:
+.. _smart_toilet_app:
 
-Wakeword and Keyword Spotting
-#############################
+Smart Toilet — voice-triggered flush
+####################################
 
 .. contents::
    :local:
    :depth: 2
 
-This application demonstrates wakeword detection and keyword spotting from a digital microphone stream using |EAILib| and Axon-based inference.
+The **Smart Toilet** application is a voice-activated flush actuator for the nRF54LM20 DK.
+It detects the magic word **"Abracadabra"** from a digital microphone stream using |EAILib| and Axon-based inference, and on detection drives a flush motor through one rotation.
+
+All inference runs on-device on the Axon AI accelerator; no audio leaves the board.
 
 Application overview
 ********************
 
-The application samples single-channel 16 kHz audio from a PDM microphone and feeds it to nRF Edge AI models.
-The wakeword phrase used by the bundled model is "Okay Nordic".
-In wakeword detection stage, model output is postprocessed with a predictions history window.
-Parameters used for postprocessing are prediction probability threshold, predictions history length and number of predictions above threshold in predictions history.
-When a wakeword is detected, the application switches to keyword detection stage.
+The application samples single-channel 16 kHz audio from a PDM microphone, cleans it up with a front-end audio chain, and feeds it to an nRF Edge AI wake-word model.
+By default it runs in **wake-word-only mode** (``APP_MODE_WW_ONLY``): it listens continuously for the single phrase "Abracadabra" and never switches to a keyword-spotting stage.
 
-The bundled keyword spotting model supports the following keywords:
+When the wake word is detected, the application:
 
-* Go
-* Stop
-* Up
-* Down
-* Yes
-* No
-* On
-* Off
-* Right
-* Left
+* blinks **LED0** for one second,
+* prints ``Wakeword detected`` on the control UART (VCOM0),
+* runs the flush motor through one rotation and stops it at the home position using a Hall sensor.
 
-In the keyword spotting stage, the application smooths class probabilities using an exponential moving average and reports a detection when class-specific criteria are met.
-After period without any keywords spotted the application switches back to wakeword stage.
+Model output is post-processed with a predictions-history window. The detection parameters are the per-frame probability threshold, the predictions-history length, and the number of predictions above the threshold required within that window. A short refractory period ensures a single utterance fires exactly once.
 
-You can also configure the application to stay in one of these stages using the application-specific Kconfig options.
+.. note::
 
-Replacing models
-================
+   The application also supports wakeword-gated keyword spotting and keyword-spotting-only modes through the ``APP_MODE`` Kconfig choice, and bundles a keyword-spotting model (Go, Stop, Up, Down, Yes, No, On, Off, Right, Left). These are not used by the deployed Smart Toilet, which is wake-word-only.
 
-You can replace the bundled models using the `Text to Wake Word Detection <Nordic Edge AI Lab Wake Word Detection_>`_ feature of the `Nordic Edge AI Lab`_ or one of `ready-to-use models <Nordic Edge AI Lab ready-to-use models_>`_.
+Wake word
+=========
 
-.. tabs::
+The active wake word is selected by the ``APP_WW_MODEL`` Kconfig choice:
 
-   .. group-tab:: Wakeword detection model
+* ``APP_WW_MODEL_ABRACADABRA`` (default) — "Abracadabra", a 5-syllable, plosive-rich phrase from nRF Edge AI Lab. ~95–100% detection at far-field in live testing.
+* ``APP_WW_MODEL_OKAY_NORDIC`` — "Okay Nordic", the add-on's bundled 4-syllable model, kept as a known-good reference (~85–90% far-field).
 
-      To replace the model used in wakeword detection stage complete the following steps:
+Longer, plosive-rich words survive far-field room reverb much better. A short fricative-led word loses exactly the high-frequency energy that reverb destroys, so it collapses at distance.
 
-      1. Replace the files inside :file:`src/ww/nrf_edgeai_generated` directory with files downloaded from `Nordic Edge AI Lab`_.
-      #. Update :c:func:`ww_init` to get a pointer to the proper model instance from generated files.
-      #. Adjust the Kconfig options to tune wakeword detection postprocessing to your model.
+Audio front-end
+===============
 
+Each audio block is processed in :file:`src/audio_proc.c` before detection, in this order:
 
-   .. group-tab:: Keyword spotting model
+#. **PDM hardware gain** — ``APP_PDM_GAIN_DB`` (default +20 dB) applied in the PDM peripheral, sized for far-field use.
+#. **High-pass filter** — ``APP_AUDIO_HPF``, a 2nd-order Butterworth high-pass at 120 Hz that strips rumble and handling noise below the speech band.
+#. **Automatic gain control (AGC)** — ``APP_AGC`` tracks the speech peak envelope and applies a smoothed software gain toward ``APP_AGC_TARGET_DBFS`` (-20 dBFS), making detection less sensitive to speaker distance. It is gated below -38 dBFS so it rides utterance peaks instead of amplifying room noise.
 
-      To replace the model used in keyword spotting stage complete the following steps:
+The AGC acts after the PDM hardware gain and cannot undo saturation in the peripheral itself, so keep ``APP_PDM_GAIN_DB`` low enough that close or loud speech does not clip.
 
-      1. Replace the files inside :file:`src/kws/nrf_edgeai_generated` directory with files downloaded from `Nordic Edge AI Lab`_.
-      #. Update :c:func:`kws_init` to get a pointer to the proper model instance from generated files.
-      #. Update the ``keyword_class`` enumeration and ``keyword_detection_ctxs`` array in the :file:`src/kws/kws.c` file to match keywords spotted by selected model.
-      #. Adjust the Kconfig options to tune keyword spotting postprocessing to selected model.
+Replacing the model
+===================
+
+You can replace the wake-word model using the `Text to Wake Word Detection <Nordic Edge AI Lab Wake Word Detection_>`_ feature of the `Nordic Edge AI Lab`_ or one of the `ready-to-use models <Nordic Edge AI Lab ready-to-use models_>`_:
+
+#. Add the generated files under a new directory in :file:`src/ww/models/`.
+#. Add a matching option to the ``APP_WW_MODEL`` Kconfig choice and point :c:func:`ww_init` at the new model instance.
+#. Adjust the ``WW_*`` Kconfig options to tune detection post-processing for your model.
 
 Requirements
 ************
@@ -68,57 +67,58 @@ The application supports the following development kit:
 
 .. table-from-sample-yaml::
 
-The application also requires PDM digital microphone connected to the pins specified in the :file:`boards/nrf54lm20dk_nrf54lm20b_cpuapp.overlay` file.
-The application is expecting audio data to be provided on left channel.
+It also requires a PDM digital microphone connected to the pins specified in the :file:`boards/nrf54lm20dk_nrf54lm20b_cpuapp.overlay` file, and the flush motor and Hall sensor described under `Pin mapping`_. Audio is expected on the left channel.
 
 Pin mapping
 ===========
 
-The application was tested with an `Adafruit PDM MEMS Microphone`_ module.
-It can be powered from 1.8V ``VDD:IO`` supply.
-The following table show how to connect this module to the DK:
+The application was tested with an `Adafruit PDM MEMS Microphone`_ module, powered from the 1.8V ``VDD:IO`` supply.
 
 .. list-table::
    :header-rows: 1
 
-   * - Adafurit DMIC
-     - nRF54LM20 DK
-   * - ``3V``
-     - ``VDD:IO``
-   * - ``GND``
-     - ``GND``
-   * - ``SEL``
-     - ``GND``
-   * - ``CLK``
-     - ``P1.4``
-   * - ``DAT``
-     - ``P1.5``
+   * - Signal
+     - nRF54LM20 DK pin
+     - Notes
+   * - Motor drive
+     - ``P1.06``
+     - Active-high, drives a logic-level MOSFET gate
+   * - Hall sensor
+     - ``P1.07``
+     - Active-low with internal pull-up; power the sensor from 5V
+   * - Microphone ``CLK``
+     - ``P1.04``
+     - Adafruit PDM MEMS microphone
+   * - Microphone ``DAT``
+     - ``P1.05``
+     - Microphone ``SEL`` → ``GND`` selects the left channel; ``VDD`` → ``VDD:IO`` (1.8V)
 
-The ``SEL`` pin is responsible for selecting audio channel and connecting it to ground selects left channel.
+.. note::
 
-To use other microphones, adapt configuration parameters of PDM in the :file:`src/dmic.c` file.
+   Do not use ``P2.00``–``P2.05`` as header GPIO on this DK: the board controller mux routes them to the onboard QSPI flash, so the header pins are inactive by default. Use ``P1``/``P3`` GPIO instead.
+
+To use other microphones, adapt the PDM configuration parameters in the :file:`src/dmic.c` file.
 
 User interface
-***************
+**************
 
 LED0:
-   Behavior depends on the selected application mode:
-
-   * Lit when keyword spotting stage is active in wakeword-gated keyword spotting mode.
-   * Blinks for one second when wakeword is detected in wakeword only mode.
-   * Stays off in keyword spotting only mode.
+   Blinks for one second when the wake word is detected (wake-word-only mode).
 
 LED1:
-   Blinks for one second on each keyword spotted.
+   Blinks for one second on each keyword spotted (keyword-spotting modes only).
+
+Flush motor:
+   Runs through one rotation on wake-word detection and stops at the home position via the Hall sensor.
 
 UART30 (VCOM0):
    Prints runtime state messages:
 
    * ``Waiting for wakeword``
    * ``Wakeword detected``
-   * ``Waiting for keywords``
-   * ``Keyword spotted: <name>``
-   * ``Keyword spotting window timeout``
+
+UART (VCOM1):
+   Zephyr log output, including actuator events and, when ``APP_AUDIO_STATS`` is enabled, per-second microphone level, AGC gain, and wake-word probability statistics for tuning.
 
 Configuration
 *************
@@ -136,9 +136,10 @@ Configuration options
 Building and running
 ********************
 
-.. |application path| replace:: :file:`applications/ww_kws`
+.. |application path| replace:: :file:`app`
 
-.. include:: /includes/application_build_and_run.txt
+This application is built against the nRF Edge AI add-on. See the repository
+``README.md`` for the full ``west build`` and ``west flash`` command lines.
 
 Testing
 =======
@@ -146,13 +147,11 @@ Testing
 |test_application|
 
 #. |connect_kit|
-#. |connect_terminal_kit| The application is using both serial ports.
-#. Open one terminal for Zephyr logs and one for control output from UART30.
-#. Say the wakeword phrase "Okay Nordic".
-#. Observe **LED0** light up.
-#. Say one of the bundled model keywords (for example, "Yes" or "No").
-#. Observe that **LED1**  blinks for one second.
-#. Stop speaking and wait for timeout.
+#. |connect_terminal_kit| The application uses both serial ports.
+#. Open one terminal for the control output from UART30 (VCOM0) and one for the Zephyr log (VCOM1).
+#. Say the magic word "Abracadabra" from the normal use position.
+#. Observe **LED0** blink for one second and the flush motor run through one rotation.
+#. Observe ``Wakeword detected`` on VCOM0.
 
 Application output
 ==================
@@ -163,9 +162,6 @@ The application shows the following output from UART30 (VCOM0):
 
    Waiting for wakeword
    Wakeword detected
-   Waiting for keywords
-   Keyword spotted: Yes
-   Keyword spotting window timeout
 
 Dependencies
 ************
@@ -178,6 +174,7 @@ This application uses the following Zephyr libraries:
 
 * `Logging`_
 * Audio (DMIC)
+* GPIO
 * UART Driver
 
 API documentation
