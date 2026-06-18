@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/coap.h>
+#include <zephyr/net/coap_client.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/net_event.h>
@@ -23,6 +24,9 @@
 #include <cJSON.h>
 #include <date_time.h>
 #include <net/nrf_cloud_coap.h>
+#include <nrf_cloud_coap_transport.h>
+
+#include <memfault/core/data_packetizer.h>
 
 #include "actuator.h"
 #include "cloud.h"
@@ -148,6 +152,49 @@ static void poll_remote_flush(void)
 	cJSON_Delete(root);
 }
 
+/* CoAP response callback for Memfault chunk uploads (fire-and-forget). */
+static void memfault_post_cb(const struct coap_client_response_data *data, void *user)
+{
+	ARG_UNUSED(user);
+
+	if (data->result_code < 0) {
+		LOG_WRN("Memfault chunk upload error: %d", data->result_code);
+	} else if (data->result_code >= COAP_RESPONSE_CODE_BAD_REQUEST) {
+		LOG_WRN("Memfault chunk upload rejected: %d.%02d", data->result_code >> 5,
+			data->result_code & 0x1f);
+	} else if (data->last_block) {
+		LOG_INF("Memfault chunk uploaded (%d.%02d)", data->result_code >> 5,
+			data->result_code & 0x1f);
+	}
+}
+
+/* Forward pending Memfault data (reboot events, metrics, coredumps) to nRF
+ * Cloud's "chunks" resource, which relays it to Memfault. Bounded per call so
+ * a large coredump cannot monopolise the single CoAP client; the rest drains
+ * on subsequent ticks.
+ */
+static void upload_memfault_chunks(void)
+{
+	static uint8_t chunk[512];
+
+	for (int i = 0; i < 4 && memfault_packetizer_data_available(); i++) {
+		size_t len = sizeof(chunk);
+
+		if (!memfault_packetizer_get_chunk(chunk, &len)) {
+			break;
+		}
+
+		int err = nrf_cloud_coap_post("chunks", NULL, chunk, len,
+					      COAP_CONTENT_FORMAT_APP_OCTET_STREAM, true,
+					      memfault_post_cb, NULL);
+		if (err) {
+			LOG_WRN("Memfault chunk post failed (err %d)", err);
+			memfault_packetizer_abort();
+			break;
+		}
+	}
+}
+
 static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 			     struct net_if *iface)
 {
@@ -228,12 +275,17 @@ static void cloud_thread_fn(void)
 		 * commands while idle.
 		 */
 		report_flushes();
+		/* Push any data captured before/at this connection (e.g. the
+		 * reboot reason event) to Memfault promptly.
+		 */
+		upload_memfault_chunks();
 
 		while (atomic_get(&connected) == 1) {
 			if (k_sem_take(&flush_event_sem, K_SECONDS(REMOTE_POLL_S)) == 0) {
 				report_flushes();
 			} else {
 				poll_remote_flush();
+				upload_memfault_chunks();
 			}
 		}
 

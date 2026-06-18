@@ -35,5 +35,10 @@ target_sources(app PRIVATE
 
 if(CONFIG_NRF_CLOUD_COAP)
   target_include_directories(app PRIVATE
-    ${ZEPHYR_BASE}/../nrf/subsys/net/lib/nrf_cloud/common/include)
+    ${ZEPHYR_BASE}/../nrf/subsys/net/lib/nrf_cloud/common/include
+    # nrf_cloud_coap_transport.h exposes nrf_cloud_coap_post(), used to forward
+    # Memfault chunks to nRF Cloud's "chunks" resource over our existing CoAP
+    # connection (the built-in MEMFAULT_USE_NRF_CLOUD_COAP path assumes a
+    # cellular modem / MODEM_JWT, which this Wi-Fi build does not have).
+    ${ZEPHYR_BASE}/../nrf/subsys/net/lib/nrf_cloud/coap/include)
 endif()
