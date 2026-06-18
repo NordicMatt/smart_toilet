@@ -28,6 +28,29 @@ config APP_MODE_KWS_ONLY
 
 endchoice
 
+choice APP_WW_MODEL
+	prompt "Wake word model"
+	default APP_WW_MODEL_ABRACADABRA
+	help
+	  Selects which generated model under src/ww/models/ is built in.
+	  Longer, plosive-rich words survive far-field room reverb much
+	  better: the original 2-syllable "Shazaam" managed only ~50% at the
+	  deployment distance and was dropped.
+
+config APP_WW_MODEL_OKAY_NORDIC
+	bool "Okay Nordic (add-on bundled model)"
+	help
+	  4-syllable phrase; ~85-90% at far-field in live testing. Kept as
+	  a known-good reference model.
+
+config APP_WW_MODEL_ABRACADABRA
+	bool "Abracadabra (Edge AI Lab solution 93800)"
+	help
+	  5-syllable word, plosive-rich with alternating open vowels —
+	  ~95-100% at far-field in live testing.
+
+endchoice
+
 config WW_PROBABILITY_THRESHOLD
 	int "Wakeword probability threshold"
 	range 0 1000
@@ -51,6 +74,67 @@ config WW_COUNT_THRESHOLD
 	help
 	  Number of predictions above threshold in predictions history required to confirm wakeword
 	  detection.
+
+config APP_PDM_GAIN_DB
+	int "PDM microphone digital gain (dB)"
+	range -20 20
+	default 12
+	help
+	  Digital gain applied in the PDM peripheral on top of the 0 dB hardware
+	  default. Raise it if speech at normal use distance peaks below about
+	  -20 dBFS; lower it if APP_AUDIO_STATS reports clipped samples.
+
+config APP_AUDIO_STATS
+	bool "Log audio level and wake-word tuning statistics"
+	help
+	  Once per second, log the microphone peak/RMS level in dBFS with a
+	  clipped-sample count, and the peak wake-word probability and vote
+	  count. Use this to tune APP_PDM_GAIN_DB and the WW_* thresholds.
+
+config APP_AUDIO_HPF
+	bool "High-pass filter the mic audio"
+	help
+	  Apply a 2nd-order Butterworth high-pass at 120 Hz to each audio
+	  block before detection, stripping rumble and handling noise below
+	  the speech band.
+
+config APP_AGC
+	bool "Automatic gain control on the mic audio"
+	help
+	  Track the speech peak level and apply a smoothed software gain that
+	  pulls it toward APP_AGC_TARGET_DBFS, compensating for speaker
+	  distance on top of the fixed APP_PDM_GAIN_DB hardware gain. Cannot
+	  undo saturation that happens in the PDM peripheral itself.
+
+config APP_AGC_TARGET_DBFS
+	int "AGC target peak level (dBFS)"
+	depends on APP_AGC
+	range -30 -6
+	default -20
+	help
+	  Peak level the AGC pulls speech toward. The wake-word model is most
+	  reliable with speech peaks in the -25 to -15 dBFS range.
+
+config APP_AUDIO_PROC
+	bool
+	default y if APP_AUDIO_HPF || APP_AGC
+
+config APP_AUDIO_SNAP
+	bool "Audio snapshot recording over the control UART"
+	help
+	  On receiving the trigger byte 'S' on the control UART (VCOM0),
+	  record APP_AUDIO_SNAP_SECONDS of the processed mic audio to RAM,
+	  then dump it back over the same UART as an "AUDIO_SNAP <bytes>"
+	  header followed by raw 16-bit little-endian PCM at 16 kHz. Save it
+	  as a .wav with: tools/uart_monitor.py snap --port <VCOM0>.
+
+config APP_AUDIO_SNAP_SECONDS
+	int "Audio snapshot length (seconds)"
+	depends on APP_AUDIO_SNAP
+	range 1 12
+	default 10
+	help
+	  Length of the recorded snapshot. RAM cost is 32 KB per second.
 
 config KWS_PERIOD_MS
 	int "Length of keyword spotting window in wakeword-gated mode"

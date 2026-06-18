@@ -23,10 +23,9 @@ LOG_MODULE_REGISTER(dmic);
 /* PDM digital gain to boost mic sensitivity. Register units are 0.5 dB/step:
  * 0x28 = 0 dB (default), 0x50 = +20 dB (max). The Zephyr nrfx PDM driver resets
  * gain to the 0 dB default during dmic_configure(), so it must be re-applied
- * afterwards (see dmic_init). Tune DMIC_PDM_GAIN_DB to taste.
+ * afterwards (see dmic_init). Tune via CONFIG_APP_PDM_GAIN_DB.
  */
-#define DMIC_PDM_GAIN_DB 12
-#define DMIC_PDM_GAIN	 (NRF_PDM_GAIN_DEFAULT + (DMIC_PDM_GAIN_DB) * 2)
+#define DMIC_PDM_GAIN (NRF_PDM_GAIN_DEFAULT + (CONFIG_APP_PDM_GAIN_DB) * 2)
 
 K_MEM_SLAB_DEFINE_STATIC(dmic_mem_slab, BLOCK_SIZE, 4, 4);
 
@@ -73,7 +72,7 @@ int dmic_init(void)
 	 */
 	nrf_pdm_gain_set((NRF_PDM_Type *)DT_REG_ADDR(DT_NODELABEL(dmic_dev)),
 			 DMIC_PDM_GAIN, DMIC_PDM_GAIN);
-	LOG_INF("PDM gain set to +%d dB (reg 0x%02x)", DMIC_PDM_GAIN_DB, DMIC_PDM_GAIN);
+	LOG_INF("PDM gain set to %+d dB (reg 0x%02x)", CONFIG_APP_PDM_GAIN_DB, DMIC_PDM_GAIN);
 
 	return 0;
 }

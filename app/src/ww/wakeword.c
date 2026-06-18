@@ -21,8 +21,13 @@ static nrf_edgeai_t *ww_model;
 
 int ww_init(void)
 {
-	/* Smart toilet "abracadabra" wake word model (Edge AI Lab solution 93800). */
+#ifdef CONFIG_APP_WW_MODEL_OKAY_NORDIC
+	/* The add-on's bundled "Okay Nordic" reference wake word model. */
+	ww_model = nrf_edgeai_user_model_wakeword();
+#else
+	/* "Abracadabra" wake word model (Edge AI Lab solution 93800). */
 	ww_model = nrf_edgeai_user_model_93800();
+#endif
 	__ASSERT_NO_MSG(ww_model);
 	__ASSERT_NO_MSG(ww_model->input.window_size == DMIC_SAMPLES_IN_BLOCK);
 
@@ -36,11 +41,14 @@ int ww_init(void)
 	return 0;
 }
 
-/* After a detection, ignore further hits for this many 10 ms frames (~1 s).
- * An "abracadabra" utterance is longer than the voting window, so without a
- * refractory period a single utterance fires several times.
+/* After a detection, ignore further hits for this many inference frames.
+ * Inference only completes every third 10 ms block (the model buffers the
+ * first two), so one frame is ~30 ms and 33 frames is ~1 s. A wake-word
+ * utterance outlives the voting window, so without a refractory period a
+ * single utterance fires several times; a tail re-fire that slips through
+ * is absorbed by the actuator lockout.
  */
-#define WW_REFRACTORY_FRAMES 100
+#define WW_REFRACTORY_FRAMES 33
 
 static bool ww_postprocess(void)
 {
@@ -62,8 +70,36 @@ static bool ww_postprocess(void)
 
 	LOG_DBG("postprocess: count: %2u, probability: %f", ww_count, (double)class_probability);
 
+#ifdef CONFIG_APP_AUDIO_STATS
+	/* Per-second tuning telemetry: how close the detector got. Inference
+	 * completes every third 10 ms block, so 33 frames make one report.
+	 */
+	static uint32_t stat_frames;
+	static float stat_max_prob;
+	static uint32_t stat_max_count;
+
+	stat_max_prob = MAX(stat_max_prob, class_probability);
+	stat_max_count = MAX(stat_max_count, ww_count);
+
+	if (++stat_frames >= 33) {
+		LOG_INF("ww: peak prob %.2f (bar %.2f), peak votes %u/%d", (double)stat_max_prob,
+			(double)ww_threshold, stat_max_count, CONFIG_WW_COUNT_THRESHOLD);
+		stat_frames = 0;
+		stat_max_prob = 0.f;
+		stat_max_count = 0;
+	}
+#endif /* CONFIG_APP_AUDIO_STATS */
+
 	if (refractory > 0) {
 		refractory--;
+		if (refractory == 0) {
+			/* Votes accumulated while suppressed would otherwise
+			 * half-count toward the next fire and decay before the
+			 * check resumes; start the next utterance fresh.
+			 */
+			ww_count = 0;
+			ww_history = 0;
+		}
 		return false;
 	}
 

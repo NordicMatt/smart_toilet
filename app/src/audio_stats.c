@@ -1,0 +1,61 @@
+/*
+ * Copyright (c) 2026 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ */
+
+#include <math.h>
+#include <stdint.h>
+
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+
+#include "audio_stats.h"
+#include "dmic.h"
+
+LOG_MODULE_REGISTER(audio_stats);
+
+/* One report per second of audio. */
+#define STATS_WINDOW_SAMPLES DMIC_PCM_RATE
+
+/* Samples at or above this magnitude count as clipped. The PDM decimation
+ * filter saturates at full scale, so anything this close to the rail means
+ * the gain is too high for the input level.
+ */
+#define CLIP_LEVEL 32700
+
+void audio_stats_update(const void *buffer, size_t num_samples)
+{
+	static uint32_t window_samples;
+	static uint32_t peak;
+	static uint64_t sum_sq;
+	static uint32_t clipped;
+
+	const int16_t *samples = buffer;
+
+	for (size_t i = 0; i < num_samples; i++) {
+		const int32_t s = samples[i];
+		const uint32_t mag = (s < 0) ? -s : s;
+
+		peak = MAX(peak, mag);
+		sum_sq += (uint64_t)((int64_t)s * s);
+		clipped += (mag >= CLIP_LEVEL);
+	}
+
+	window_samples += num_samples;
+	if (window_samples < STATS_WINDOW_SAMPLES) {
+		return;
+	}
+
+	const float rms = sqrtf((float)(sum_sq / window_samples));
+	const float peak_db = 20.f * log10f(MAX(peak, 1) / 32768.f);
+	const float rms_db = 20.f * log10f(MAX(rms, 1.f) / 32768.f);
+
+	LOG_INF("audio: peak %.1f dBFS, rms %.1f dBFS, clipped %u/%u", (double)peak_db,
+		(double)rms_db, clipped, window_samples);
+
+	window_samples = 0;
+	peak = 0;
+	sum_sq = 0;
+	clipped = 0;
+}

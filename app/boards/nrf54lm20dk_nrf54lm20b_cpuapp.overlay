@@ -31,6 +31,15 @@
 		compatible = "smart-toilet,hall-sensor";
 		gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
 	};
+
+	/* Failsafe flush switch on P1.08: one side wired to GND, so closing
+	 * the switch pulls the line low (active low) against the internal
+	 * pull-up. Triggers a flush without the wake word.
+	 */
+	flush_button: flush-button {
+		compatible = "smart-toilet,flush-button";
+		gpios = <&gpio1 8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+	};
 };
 
 &uart30 {
