@@ -13,6 +13,8 @@
 / {
 	chosen {
 		ncs,control-output-uart = &uart30;
+		/* Partition Manager places the MCUboot secondary slot here. */
+		nordic,pm-ext-flash = &mx25r64;
 	};
 
 	/* Flush motor drive on P1.06 (active high = MOSFET on). P1.06 is not
@@ -70,30 +72,10 @@ dmic_dev: &pdm20 {
 	status = "okay";
 };
 
-/*
- * nRF54L uses devicetree partitioning (no Partition Manager). Relocate the
- * MCUboot secondary slot (image-1) to the onboard MX25R6435F (8 MB SPI-NOR on
- * spi00, CS P2.05) and grow the internal primary slot (image-0) to cover the
- * whole app region the freed internal slot1 used to occupy.
+/* Onboard MX25R6435F (8 MB SPI-NOR on spi00, CS P2.05). Enabled so the
+ * Partition Manager can place the MCUboot secondary slot off-chip, freeing
+ * internal RRAM for a full-size primary slot.
  */
-&slot0_partition {
-	/* 1840 KB: from end of mcuboot (0x10000) up to storage (0x1dc000). */
-	reg = <0x10000 0x1cc000>;
-};
-
-/delete-node/ &slot1_partition;
-
 &mx25r64 {
 	status = "okay";
-
-	partitions {
-		compatible = "fixed-partitions";
-		#address-cells = <1>;
-		#size-cells = <1>;
-
-		slot1_partition: partition@0 {
-			label = "image-1";
-			reg = <0x0 0x1cc000>;	/* 1840 KB, matches slot0 */
-		};
-	};
 };

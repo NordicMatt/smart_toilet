@@ -25,6 +25,9 @@
 #include <date_time.h>
 #include <net/nrf_cloud_coap.h>
 #include <nrf_cloud_coap_transport.h>
+#include <net/fota_download.h>
+#include <net/nrf_cloud_fota_poll.h>
+#include <zephyr/sys/reboot.h>
 
 #include <memfault/core/data_packetizer.h>
 
@@ -40,6 +43,8 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
  * command. CoAP is client-driven, so remote control is poll-based.
  */
 #define REMOTE_POLL_S	    15
+/* How often, while connected, to ask nRF Cloud whether a FOTA job is queued. */
+#define FOTA_CHECK_S	    120
 
 /* nRF Cloud appId for the flush telemetry messages. */
 #define FLUSH_APP_ID	    "FLUSH"
@@ -56,6 +61,14 @@ static atomic_t connected = ATOMIC_INIT(0);
 static atomic_t flush_pending = ATOMIC_INIT(0);
 /* Total lifetime flush count, persisted in NVS via the settings subsystem. */
 static uint32_t flush_count;
+
+static void fota_reboot(enum nrf_cloud_fota_reboot_status status);
+/* FOTA polling context; the reboot handler applies the update on the next boot. */
+static struct nrf_cloud_fota_poll_ctx fota_ctx = {
+	.reboot_fn = fota_reboot,
+};
+/* Next uptime (ms) at which to poll nRF Cloud for a FOTA job. */
+static int64_t next_fota_check;
 
 bool cloud_is_connected(void)
 {
@@ -195,6 +208,50 @@ static void upload_memfault_chunks(void)
 	}
 }
 
+/* Reboot to apply or finalize a FOTA update. The downloaded image lives in
+ * the external-flash secondary slot; MCUboot swaps it into the internal
+ * primary slot on the next boot.
+ */
+static void fota_reboot(enum nrf_cloud_fota_reboot_status status)
+{
+	LOG_INF("FOTA reboot requested (status %d); rebooting to apply update", status);
+	k_sleep(K_SECONDS(1)); /* let the log line drain */
+	sys_reboot(SYS_REBOOT_COLD);
+}
+
+/* Advertise application-FOTA support to nRF Cloud (shadow serviceInfo
+ * "fota_v2"). Without this the portal will not offer application updates.
+ */
+static void advertise_fota_support(void)
+{
+	struct nrf_cloud_svc_info_fota fota = { .application = 1 };
+	struct nrf_cloud_svc_info svc = { .fota = &fota };
+
+	int err = nrf_cloud_coap_shadow_service_info_update(&svc);
+
+	if (err) {
+		LOG_WRN("FOTA service-info update failed (err %d)", err);
+	}
+}
+
+/* Ask nRF Cloud whether a FOTA job is queued; if so, download it over the
+ * CoAP connection and stage it. A staged image triggers a reboot via
+ * fota_reboot(), so this returns only when there is no job (-EAGAIN) or on
+ * error. Runs on the cloud thread, so it shares the single nRF Cloud CoAP
+ * client without concurrent access.
+ */
+static void check_fota(void)
+{
+	int err = nrf_cloud_fota_poll_process(&fota_ctx);
+
+	if (err == -EAGAIN) {
+		return; /* no job queued */
+	}
+	if (err < 0) {
+		LOG_WRN("FOTA poll failed (err %d)", err);
+	}
+}
+
 static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 			     struct net_if *iface)
 {
@@ -237,6 +294,14 @@ static void cloud_thread_fn(void)
 	(void)settings_load_subtree("toilet");
 	LOG_INF("Flush count restored: %u", flush_count);
 
+	/* FOTA polling assistance: downloads + stages images to the MCUboot
+	 * secondary slot (in external flash). Non-fatal if it fails to init.
+	 */
+	err = nrf_cloud_fota_poll_init(&fota_ctx);
+	if (err) {
+		LOG_WRN("nrf_cloud_fota_poll_init failed (err %d); FOTA disabled", err);
+	}
+
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
 	net_mgmt_add_event_callback(&l4_cb);
 	date_time_register_handler(date_time_evt_handler);
@@ -270,6 +335,13 @@ static void cloud_thread_fn(void)
 		LOG_INF("Connected to nRF Cloud");
 		atomic_set(&connected, 1);
 
+		/* Finalize a FOTA job that completed just before a reboot (image
+		 * validation), then tell the cloud we accept application updates.
+		 */
+		(void)nrf_cloud_fota_poll_process_pending(&fota_ctx);
+		advertise_fota_support();
+		next_fota_check = 0; /* check for a job shortly after connecting */
+
 		/* Push the current flush count to the shadow on (re)connect, then
 		 * service flush events as they occur and poll for remote-flush
 		 * commands while idle.
@@ -286,6 +358,11 @@ static void cloud_thread_fn(void)
 			} else {
 				poll_remote_flush();
 				upload_memfault_chunks();
+				if (k_uptime_get() >= next_fota_check) {
+					check_fota();
+					next_fota_check = k_uptime_get() +
+							  (int64_t)FOTA_CHECK_S * MSEC_PER_SEC;
+				}
 			}
 		}
 
@@ -294,9 +371,9 @@ static void cloud_thread_fn(void)
 	}
 }
 
-/* Runs the DTLS handshake + ECDSA JWT signing and the cJSON shadow/message
- * encoding. 6 KB is comfortable (the nRF Cloud sample does the same work on a
- * ~4.5 KB connection thread); the earlier 16 KB was over-provisioned while
- * chasing what turned out to be a heap-collision bug, not a stack overflow.
+/* Runs the DTLS handshake + ECDSA JWT signing, the cJSON shadow/message
+ * encoding, and (when a job is queued) FOTA job-document parsing and download
+ * coordination. 8 KB covers the added FOTA work; the actual image download
+ * runs on the downloader's own thread (CONFIG_DOWNLOADER_STACK_SIZE).
  */
-K_THREAD_DEFINE(cloud_tid, 6144, cloud_thread_fn, NULL, NULL, NULL, 7, 0, 0);
+K_THREAD_DEFINE(cloud_tid, 8192, cloud_thread_fn, NULL, NULL, NULL, 7, 0, 0);

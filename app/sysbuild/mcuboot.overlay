@@ -1,28 +1,15 @@
 /*
  * MCUboot devicetree overlay (auto-applied by sysbuild to the mcuboot image).
- *
- * nRF54L uses devicetree partitioning (no Partition Manager), so MCUboot must
- * see the same layout as the app: secondary slot (image-1) in the external
- * MX25R6435F, primary slot (image-0) grown to the whole internal app region.
+ * Enable the onboard MX25R64 SPI-NOR and select it as the Partition Manager
+ * external-flash device so MCUboot can read/swap the secondary slot off-chip.
  */
-
-&slot0_partition {
-	reg = <0x10000 0x1cc000>;	/* 1840 KB */
-};
-
-/delete-node/ &slot1_partition;
 
 &mx25r64 {
 	status = "okay";
+};
 
-	partitions {
-		compatible = "fixed-partitions";
-		#address-cells = <1>;
-		#size-cells = <1>;
-
-		slot1_partition: partition@0 {
-			label = "image-1";
-			reg = <0x0 0x1cc000>;	/* 1840 KB, matches slot0 */
-		};
+/ {
+	chosen {
+		nordic,pm-ext-flash = &mx25r64;
 	};
 };
