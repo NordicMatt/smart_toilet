@@ -41,8 +41,9 @@ LOG_MODULE_REGISTER(actuator);
 /* P1.06: HIGH = MOSFET on = motor runs (active high). */
 static const struct gpio_dt_spec motor_gpio =
 	GPIO_DT_SPEC_GET(DT_NODELABEL(flush_actuator), gpios);
-/* P1.07: the sensor pulls the line low when the magnet is present (active
- * low, so a logical read of 1 means "magnet at sensor").
+/* P1.12: the sensor pulls the line low when the magnet is present (active
+ * low, so a logical read of 1 means "magnet at sensor"). Moved off P1.07,
+ * which the nRF7002 EB II claims as its coexistence GRANT pad.
  */
 static const struct gpio_dt_spec hall_gpio =
 	GPIO_DT_SPEC_GET(DT_NODELABEL(hall_sensor), gpios);
