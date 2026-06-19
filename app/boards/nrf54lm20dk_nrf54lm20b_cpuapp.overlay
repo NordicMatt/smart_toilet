@@ -69,3 +69,31 @@ dmic_dev: &pdm20 {
 &axon {
 	status = "okay";
 };
+
+/*
+ * nRF54L uses devicetree partitioning (no Partition Manager). Relocate the
+ * MCUboot secondary slot (image-1) to the onboard MX25R6435F (8 MB SPI-NOR on
+ * spi00, CS P2.05) and grow the internal primary slot (image-0) to cover the
+ * whole app region the freed internal slot1 used to occupy.
+ */
+&slot0_partition {
+	/* 1840 KB: from end of mcuboot (0x10000) up to storage (0x1dc000). */
+	reg = <0x10000 0x1cc000>;
+};
+
+/delete-node/ &slot1_partition;
+
+&mx25r64 {
+	status = "okay";
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		slot1_partition: partition@0 {
+			label = "image-1";
+			reg = <0x0 0x1cc000>;	/* 1840 KB, matches slot0 */
+		};
+	};
+};
