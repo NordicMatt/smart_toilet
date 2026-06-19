@@ -32,7 +32,7 @@ LOG_MODULE_REGISTER(actuator);
 /* Maximum motor run time. If the magnet is never sensed (jam, misaligned
  * magnet, faulty sensor) the motor is forced off so it cannot burn out.
  */
-#define MOTOR_SAFETY_MS	    1000
+#define MOTOR_SAFETY_MS	    1500
 /* Minimum time between flushes after the motor stops. */
 #define FLUSH_LOCKOUT_MS    1000
 /* Edges on the failsafe switch within this window are contact bounce. */
