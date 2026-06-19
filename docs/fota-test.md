@@ -8,6 +8,26 @@ then swapped into the internal primary slot by MCUboot on reboot.
 This requires the spike branch `spike/mcuboot-ext-flash-fota` (MCUboot + FOTA
 client). The stock `main` build has no bootloader and cannot do FOTA.
 
+## Delivery path: Memfault Release Management (not the nRF Cloud FOTA service)
+
+Firmware is delivered by **Memfault Release Management**, not the nRF Cloud FOTA
+service. The build enables `CONFIG_MEMFAULT_ZEPHYR_FOTA_BACKEND_NRF_CLOUD_OVERRIDE`
+(Memfault SDK 1.40.0), which linker-`--wrap`s `nrf_cloud_coap_fota_job_get()` and
+redirects the job query to Memfault's OTA endpoint over the existing nRF Cloud
+CoAP link. The app code is unchanged — `cloud.c` still calls
+`nrf_cloud_fota_poll_process()`; only where the *job document* comes from changes.
+
+**Bootstrap (one-time, requires physical access):** a device can only pull from
+Memfault once it is already running firmware that has the override. The override
+lives in this branch's build but is not on the field unit yet, so the **first**
+override-enabled image must be flashed over the wire (Step 1). Every subsequent
+update can then arrive via Memfault FOTA.
+
+**Version matching:** Memfault offers an update only when the cohort's active
+release version differs from the device's reported version
+(`CONFIG_MEMFAULT_NCS_FW_VERSION`, now sourced from `app/VERSION`). Baseline and
+OTA-target builds must therefore have different `app/VERSION` values.
+
 ## How a swap is verified
 
 `main.c` logs a boot marker every boot:

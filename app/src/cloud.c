@@ -32,6 +32,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include <memfault/core/data_packetizer.h>
+#include <memfault/ports/zephyr/http.h>
 
 #include "actuator.h"
 #include "cloud.h"
@@ -167,46 +168,21 @@ static void poll_remote_flush(void)
 	cJSON_Delete(root);
 }
 
-/* CoAP response callback for Memfault chunk uploads (fire-and-forget). */
-static void memfault_post_cb(const struct coap_client_response_data *data, void *user)
-{
-	ARG_UNUSED(user);
-
-	if (data->result_code < 0) {
-		LOG_WRN("Memfault chunk upload error: %d", data->result_code);
-	} else if (data->result_code >= COAP_RESPONSE_CODE_BAD_REQUEST) {
-		LOG_WRN("Memfault chunk upload rejected: %d.%02d", data->result_code >> 5,
-			data->result_code & 0x1f);
-	} else if (data->last_block) {
-		LOG_INF("Memfault chunk uploaded (%d.%02d)", data->result_code >> 5,
-			data->result_code & 0x1f);
-	}
-}
-
-/* Forward pending Memfault data (reboot events, metrics, coredumps) to nRF
- * Cloud's "chunks" resource, which relays it to Memfault. Bounded per call so
- * a large coredump cannot monopolise the single CoAP client; the rest drains
- * on subsequent ticks.
+/* Forward pending Memfault data (reboot events, metrics, coredumps) via the
+ * Memfault nRF Cloud CoAP integration (CONFIG_MEMFAULT_USE_NRF_CLOUD_COAP). It
+ * posts to the "chunks" resource with the project key (CoAP option 2429) and is
+ * the same transport the Memfault FOTA override uses for OTA queries.
  */
 static void upload_memfault_chunks(void)
 {
-	static uint8_t chunk[512];
+	if (!memfault_packetizer_data_available()) {
+		return;
+	}
 
-	for (int i = 0; i < 4 && memfault_packetizer_data_available(); i++) {
-		size_t len = sizeof(chunk);
+	int err = memfault_zephyr_port_post_data();
 
-		if (!memfault_packetizer_get_chunk(chunk, &len)) {
-			break;
-		}
-
-		int err = nrf_cloud_coap_post("chunks", NULL, chunk, len,
-					      COAP_CONTENT_FORMAT_APP_OCTET_STREAM, true,
-					      memfault_post_cb, NULL);
-		if (err) {
-			LOG_WRN("Memfault chunk post failed (err %d)", err);
-			memfault_packetizer_abort();
-			break;
-		}
+	if (err) {
+		LOG_WRN("Memfault data post failed (err %d)", err);
 	}
 }
 
