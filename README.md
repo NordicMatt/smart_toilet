@@ -231,8 +231,8 @@ Zephyr modules, the Wi-Fi shield, and the cloud config overlay:
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 \
-    -DEXTRA_CONF_FILE=app/cloud.conf \
-    -DZEPHYR_EXTRA_MODULES="<addon>/edge-ai;<addon>/modules/edge-impulse-sdk-zephyr"
+    -DEXTRA_CONF_FILE=cloud.conf \
+    -DZEPHYR_EXTRA_MODULES=<addon>/edge-ai
 ```
 
 Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached; add

@@ -28,7 +28,7 @@ LOG_MODULE_REGISTER(actuator);
  * the magnet reaches the sensor, so a short overrun lets it rotate the rest
  * of the way to the proper resting spot.
  */
-#define HALL_OVERRUN_MS	    100
+#define HALL_OVERRUN_MS	    150
 /* Maximum motor run time. If the magnet is never sensed (jam, misaligned
  * magnet, faulty sensor) the motor is forced off so it cannot burn out.
  */
