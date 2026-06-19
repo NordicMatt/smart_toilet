@@ -11,6 +11,7 @@
 #include <zephyr/logging/log.h>
 
 #include "audio_stats.h"
+#include "audio_telemetry.h"
 #include "dmic.h"
 
 LOG_MODULE_REGISTER(audio_stats);
@@ -53,6 +54,9 @@ void audio_stats_update(const void *buffer, size_t num_samples)
 
 	LOG_INF("audio: peak %.1f dBFS, rms %.1f dBFS, clipped %u/%u", (double)peak_db,
 		(double)rms_db, clipped, window_samples);
+
+	/* Forward levels to Memfault for remote (serial-less) diagnosis. */
+	audio_telemetry_levels(peak_db, rms_db, clipped);
 
 	window_samples = 0;
 	peak = 0;

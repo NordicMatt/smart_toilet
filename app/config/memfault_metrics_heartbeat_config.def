@@ -1,0 +1,27 @@
+/*
+ * Application Memfault heartbeat metrics (forwarded to Memfault via nRF Cloud
+ * CoAP). Used to diagnose wake-word detection remotely, off wall USB with no
+ * serial attached. Reported once per heartbeat interval
+ * (CONFIG_MEMFAULT_METRICS_HEARTBEAT_INTERVAL_SECS).
+ *
+ * dBFS values are stored as deci-dBFS (dB * 10) so they fit a signed integer:
+ * e.g. -38.5 dBFS is stored as -385.
+ */
+
+/* Loudest peak level seen during the interval (deci-dBFS). High = mic is
+ * receiving signal; pinned low = weak/dead mic. */
+MEMFAULT_METRICS_KEY_DEFINE(audio_peak_dbfs, kMemfaultMetricType_Signed)
+
+/* Quietest RMS (noise floor) during the interval (deci-dBFS). */
+MEMFAULT_METRICS_KEY_DEFINE(audio_noise_floor_dbfs, kMemfaultMetricType_Signed)
+
+/* Clipped samples accumulated during the interval (too loud / gain too high). */
+MEMFAULT_METRICS_KEY_DEFINE(audio_clip_count, kMemfaultMetricType_Unsigned)
+
+/* Highest wake-word probability reached during the interval, as a percent
+ * (0-100). If this stays well below the detection bar, the model isn't
+ * recognising the word (or the mic signal is too weak). */
+MEMFAULT_METRICS_KEY_DEFINE(ww_prob_max_pct, kMemfaultMetricType_Unsigned)
+
+/* Confirmed wake-word detections during the interval. */
+MEMFAULT_METRICS_KEY_DEFINE(ww_detections, kMemfaultMetricType_Unsigned)

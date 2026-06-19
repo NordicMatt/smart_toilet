@@ -12,10 +12,13 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/logging/log.h>
 
+#include <app_version.h>
+
 #include "actuator.h"
 #include "audio_proc.h"
 #include "audio_snap.h"
 #include "audio_stats.h"
+#include "audio_telemetry.h"
 #include "cloud.h"
 #include "control_output.h"
 #include "dmic.h"
@@ -61,6 +64,7 @@ static int ww_loop(void)
 		}
 
 		if (ww_detected) {
+			audio_telemetry_detection();
 			print_control_output((struct control_message){CONTROL_MESSAGE_WW_DETECTED});
 			if (IS_ENABLED(CONFIG_APP_MODE_WW_ONLY)) {
 				leds_blink_led0();
@@ -123,6 +127,11 @@ static int kws_loop(void)
 int main(void)
 {
 	int err;
+
+	/* Boot marker: prints the running firmware version. Use this to confirm a
+	 * FOTA swap actually took effect (the new image reports the new version).
+	 */
+	LOG_INF("Smart Toilet firmware v%s starting", APP_VERSION_EXTENDED_STRING);
 
 	err = dmic_init();
 	if (err) {

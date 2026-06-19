@@ -21,8 +21,10 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
 
+#include <app_version.h>
 #include <cJSON.h>
 #include <date_time.h>
+#include <net/nrf_cloud.h>
 #include <net/nrf_cloud_coap.h>
 #include <nrf_cloud_coap_transport.h>
 #include <net/fota_download.h>
@@ -231,6 +233,19 @@ static void advertise_fota_support(void)
 
 	if (err) {
 		LOG_WRN("FOTA service-info update failed (err %d)", err);
+	}
+
+	/* Report the running app version in the shadow at the standard location
+	 * (reported.device.deviceInfo.appVersion). nRF Cloud needs the device's
+	 * version to dispatch a queued FOTA job; without it the fota/exec/current
+	 * poll returns 4.04. The nrf_cloud device_status path only encodes
+	 * appVersion when CONFIG_MODEM_INFO is set, which this Wi-Fi unit lacks,
+	 * so write it directly.
+	 */
+	err = nrf_cloud_coap_shadow_state_update(
+		"{\"device\":{\"deviceInfo\":{\"appVersion\":\"" APP_VERSION_STRING "\"}}}");
+	if (err) {
+		LOG_WRN("appVersion shadow update failed (err %d)", err);
 	}
 }
 

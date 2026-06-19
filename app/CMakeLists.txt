@@ -52,6 +52,10 @@ endif()
 target_sources(app PRIVATE ${WW_MODEL_DIR}/nrf_edgeai_generated/nrf_edgeai_user_model.c)
 target_include_directories(app PRIVATE ${WW_MODEL_DIR})
 
+target_sources_ifdef(CONFIG_MEMFAULT app PRIVATE src/audio_telemetry.c)
+# Application Memfault heartbeat metric definitions
+# (memfault_metrics_heartbeat_config.def lives in config/).
+zephyr_include_directories_ifdef(CONFIG_MEMFAULT config)
 target_sources_ifdef(CONFIG_APP_AUDIO_STATS app PRIVATE src/audio_stats.c)
 target_sources_ifdef(CONFIG_APP_AUDIO_PROC app PRIVATE src/audio_proc.c)
 target_sources_ifdef(CONFIG_APP_AUDIO_SNAP app PRIVATE src/audio_snap.c)

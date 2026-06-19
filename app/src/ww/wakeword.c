@@ -11,6 +11,7 @@
 #include <nrf_edgeai/nrf_edgeai.h>
 #include <nrf_edgeai/rt/nrf_edgeai_runtime_aux.h>
 
+#include "../audio_telemetry.h"
 #include "../dmic.h"
 #include "nrf_edgeai_generated/nrf_edgeai_user_model.h"
 #include "wakeword.h"
@@ -62,6 +63,9 @@ static bool ww_postprocess(void)
 	const float class_probability =
 		ww_model->decoded_output.classif.probabilities.p_f32[predicted_class];
 	const bool ww_detected = class_probability > ww_threshold;
+
+	/* Remote diagnosis: track the peak probability per Memfault heartbeat. */
+	audio_telemetry_prob(class_probability);
 
 	const bool oldest_entry = (bool)(ww_history & BIT(CONFIG_WW_HISTORY_SIZE - 1));
 
