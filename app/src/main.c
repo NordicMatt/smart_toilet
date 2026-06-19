@@ -183,6 +183,12 @@ int main(void)
 		return err;
 	}
 
+	/* Steady LED1 = audio sampling is live (mic is being read). Signals when
+	 * to start speaking; LED0 still blinks on each wake-word detection.
+	 */
+	leds_on_led1();
+	LOG_INF("Audio sampling started (LED1 on)");
+
 	while (true) {
 		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS) ||
 		    IS_ENABLED(CONFIG_APP_MODE_WW_ONLY)) {

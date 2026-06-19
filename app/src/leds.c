@@ -83,3 +83,13 @@ void leds_off_led0(void)
 {
 	gpio_pin_set_dt(&led0, 0);
 }
+
+void leds_on_led1(void)
+{
+	gpio_pin_set_dt(&led1, 1);
+}
+
+void leds_off_led1(void)
+{
+	gpio_pin_set_dt(&led1, 0);
+}
