@@ -1,5 +1,13 @@
 # Plan: Add nRF7002 EB II Wi-Fi + nRF Cloud (CoAP) to the Smart Toilet
 
+> **⚠️ Superseded — historical planning record (2026-06-16).** The shipped design
+> diverged from this plan: the build target is **`cpuapp`** (secure, no TF-M, not
+> `/ns`), and the cloud side moved off nRF Cloud entirely to **pure Memfault over
+> HTTPS** (diagnostics + FOTA), so the flush-count shadow and remote-flush command
+> were replaced by a `flush_count` Memfault metric (no remote flush). The Wi-Fi
+> bring-up and pin re-jumpering below still reflect the hardware. For the current
+> architecture see [README.md](README.md) and [docs/fota-test.md](docs/fota-test.md).
+
 **Decisions (2026-06-16):** Transport = **CoAP**; build target = **`nrf54lm20dk/nrf54lm20b/cpuapp/ns`** (TF-M);
 cloud features = **flush-event device message + flush-count shadow + remote-flush command (polled)**.
 

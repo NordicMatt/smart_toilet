@@ -33,9 +33,9 @@ motor through one rotation and stops it at the home position using a Hall sensor
 
 Wake-word detection runs fully on-device on the Axon AI accelerator — **no audio
 ever leaves the board.** With the **nRF7002 EB II** Wi-Fi shield the device also
-connects to **nRF Cloud** (CoAP) to report flush events, keep a flush-count shadow,
-and accept a remote flush, and runs **Memfault** for crash/metric monitoring
-(forwarded through nRF Cloud). The application runs in **wake-word-only mode**.
+connects to **Memfault** over HTTPS for crash/metric monitoring, reports its flush
+count as a Memfault metric, and receives firmware updates over the air via
+**Memfault Release Management**. The application runs in **wake-word-only mode**.
 
 - Board target: `nrf54lm20dk/nrf54lm20b/cpuapp` (secure, no TF-M)
 - Wi-Fi shield: `nrf7002eb2` (on the P17 expansion connector)
@@ -65,10 +65,10 @@ The hardware lives in a 3D-printed "magic chest" enclosure (sources in
 4. On detection, `actuator_flush()` runs the motor and stops it when the Hall
    sensor sees the shaft magnet return home (`src/actuator.c`). LED0 blinks for
    one second and `Wakeword detected` is printed on the control UART (VCOM0).
-5. In parallel, `src/cloud.c` brings up Wi-Fi, connects to nRF Cloud, reports each
-   flush, and forwards Memfault data. Audio capture only starts **after** the
-   cloud connection is up, so the DTLS/JWT bring-up never competes with the
-   wake-word inference for CPU and DMIC buffers.
+5. In parallel, `src/cloud.c` brings up Wi-Fi and connects to **Memfault over
+   HTTPS** to upload diagnostics, publish the flush count, and check for firmware
+   updates. Audio capture only starts **after** the network is up, so the TLS
+   bring-up never competes with the wake-word inference for CPU and DMIC buffers.
 
 **Why "Abracadabra":** wake words with more syllables and plosive consonants
 survive far-field room reverb far better. The original 2-syllable "Shazaam"
@@ -154,46 +154,43 @@ In `src/actuator.c`:
 ## Wi-Fi
 
 Connectivity comes from the **nRF7002 EB II** on P17. `src/cloud.c` uses `conn_mgr`
-to bring the interface up and connect, then obtains time over NTP before connecting
-to the cloud. The app connects with Wi-Fi credentials stored in NVS (Zephyr
+to bring the interface up and connect, then obtains time over NTP (needed for TLS
+certificate validity checks) before connecting to Memfault. The app connects with
+Wi-Fi credentials stored in NVS (Zephyr
 `wifi_credentials`); provision them with the `wifi cred add -s "<SSID>" -k <keymgmt>
 -p "<PASSWORD>"` shell command (on a build with `CONFIG_SHELL`) or compiled-in
 static `CONFIG_WIFI_CREDENTIALS_STATIC_SSID`/`_PASSWORD`. Credentials persist across
 reboots and a `west flash` without `--erase`.
 
-## nRF Cloud (CoAP)
+## Memfault (diagnostics + FOTA)
 
-Transport is **CoAP**; the device authenticates with a per-device JWT (APP_JWT). The
-CA + device cert/key are compiled in (`CONFIG_NRF_CLOUD_PROVISION_CERTIFICATES=y`,
-C-string headers in `app/certs/`, sec tag 16842753), and the device ID is the
-hardware ID (`CONFIG_NRF_CLOUD_CLIENT_ID_SRC_HW_ID`). Onboard the device to your
-nRF Cloud account once with [`nrfcloud-utils`](https://pypi.org/project/nrfcloud-utils/)
-(`create_ca_cert` → `device_credentials_installer` → `nrf_cloud_onboard`).
+The device talks only to **Memfault**, directly over **HTTPS** — there is no
+nRF Cloud connection. `CONFIG_MEMFAULT_HTTP_ENABLE=y` authenticates with the
+Memfault project key (passed at build time — see [Build & flash](#build--flash));
+the device serial is the hardware ID. Memfault's TLS root certificates are
+provisioned at boot (`CONFIG_MEMFAULT_NCS_PROVISION_CERTIFICATES`), so there are
+no application-managed certificates.
 
-What it reports / accepts (`src/cloud.c`):
+What `src/cloud.c` does:
 
-- **Flush event** — each completed flush is sent as a `FLUSH` device message
-  (`nrf_cloud_coap_sensor_send`), value = the running flush count.
-- **Flush count shadow** — the lifetime count is pushed to the device shadow
-  (`{"flushCount":N}`) and persisted in NVS (`toilet/flush_count`), so it is
-  restored and re-reported after a reboot.
-- **Remote flush** — the device polls the shadow delta every 15 s; setting the
-  desired state `{"flush": true}` in the portal triggers `actuator_flush()`.
+- **Diagnostics** — `CONFIG_MEMFAULT=y` captures coredumps (RAM-backed, surviving
+  the warm reset that `CONFIG_RESET_ON_FATAL_ERROR=y` performs after a fault),
+  reboot reasons, and metrics, plus a GNU build ID for symbolication. The cloud
+  thread drains the Memfault packetizer and POSTs chunks to Memfault over HTTPS.
+- **Flush count** — the lifetime count is persisted in NVS (`toilet/flush_count`)
+  and published as the Memfault metric **`flush_count`** in each heartbeat, so it
+  survives reboots and shows up in the device timeline. (There is no nRF Cloud
+  shadow channel, so the old remote-flush command was dropped.)
+- **FOTA** — firmware updates are delivered by **Memfault Release Management**.
+  `memfault_zephyr_fota_start()` checks the device's cohort for a newer release
+  and downloads the signed image over HTTPS into the external-flash MCUboot
+  secondary slot; MCUboot swaps it on reboot and the app confirms it once it is
+  back online (so it survives a power-cycle). See
+  [docs/fota-test.md](docs/fota-test.md) for the full push-an-update flow.
 
-## Memfault
-
-`CONFIG_MEMFAULT=y` captures coredumps (RAM-backed, surviving the warm reset that
-`CONFIG_RESET_ON_FATAL_ERROR=y` performs after a fault), reboot reasons, and metrics,
-plus a GNU build ID for symbolication. The Memfault device serial is the same
-hardware ID as the nRF Cloud device.
-
-Memfault data is **forwarded through nRF Cloud** — `src/cloud.c` drains the Memfault
-packetizer and POSTs chunks to nRF Cloud's `chunks` CoAP resource over the existing
-connection (the built-in `MEMFAULT_USE_NRF_CLOUD_COAP` path assumes a cellular modem,
-so we do it ourselves). No device-side project key is needed. One-time cloud setup:
-link your nRF Cloud account to a Memfault project, and upload the ELF
-(`build/app/zephyr/zephyr.elf`) under **Software → Symbol Files** so coredumps
-symbolicate (matched by the GNU build ID logged at boot, `mflt: GNU Build ID: …`).
+One-time cloud setup: upload the ELF (`build/app/zephyr/zephyr.elf`) under
+**Software → Symbol Files** so coredumps symbolicate (matched by the GNU build ID
+logged at boot, `mflt: GNU Build ID: …`).
 
 ## Tuning the mic and wake word
 
@@ -225,14 +222,17 @@ UART dump conflicts with the shield's VCOM0 console.)
 ## Build & flash
 
 Built against an NCS **v3.3.1** tree with the nRF Edge AI add-on passed as extra
-Zephyr modules, the Wi-Fi shield, and the cloud config overlay:
+Zephyr modules, the Wi-Fi shield, the cloud config overlay, and the Memfault
+project key (kept out of the repo, e.g. in `~/.memfault_project_key`):
 
 ```sh
+KEY=$(tr -d '\n' < ~/.memfault_project_key)
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 \
     -DEXTRA_CONF_FILE=cloud.conf \
-    -DZEPHYR_EXTRA_MODULES=<addon>/edge-ai
+    -DZEPHYR_EXTRA_MODULES=<addon>/edge-ai \
+    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\"
 ```
 
 Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached; add
@@ -243,7 +243,7 @@ nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 -- \
   west flash -d build --dev-id <JLINK_SN>
 ```
 
-Footprint: FLASH ~45 %, RAM ~76 % of the nRF54LM20B.
+Footprint: FLASH ~45 %, RAM ~85 % of the nRF54LM20B.
 
 ### Output
 
@@ -252,12 +252,11 @@ With the EB II shield the application console (logs **and** any shell) is on **V
 `tools/uart_monitor.py` is a small pyserial reader/monitor. Representative lines:
 
 ```
-cloud: Connected to nRF Cloud
-main: nRF Cloud connected; starting audio capture
+cloud: Network ready; uploading to Memfault over HTTPS
+main: Network connected; starting audio capture
 Waiting for wakeword
 Wakeword detected
-cloud: Reported flush #1 to nRF Cloud
-cloud: Memfault chunk uploaded (2.01)
+cloud: Flush #1 recorded
 ```
 
 ## Notes / lessons learned
