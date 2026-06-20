@@ -176,15 +176,15 @@ int main(void)
 
 	LOG_INF("Initialization completed, check output on VCOM0");
 
-	/* Bring up Wi-Fi + nRF Cloud first, then start audio capture, so the
-	 * memory-intensive DTLS/JWT handshake does not compete with the DMIC and
-	 * edge-AI inference during connect.
+	/* Bring up Wi-Fi first, then start audio capture, so the memory-intensive
+	 * TLS handshake to Memfault does not compete with the DMIC and edge-AI
+	 * inference during connect.
 	 */
-	LOG_INF("Waiting for nRF Cloud connection before starting audio...");
+	LOG_INF("Waiting for network connectivity before starting audio...");
 	while (!cloud_is_connected()) {
 		k_sleep(K_SECONDS(1));
 	}
-	LOG_INF("nRF Cloud connected; starting audio capture");
+	LOG_INF("Network connected; starting audio capture");
 
 	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
 	if (err < 0) {

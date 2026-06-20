@@ -3,54 +3,48 @@
  *
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  *
- * nRF Cloud (CoAP over Wi-Fi) connectivity for the smart toilet.
+ * Memfault connectivity (HTTPS over Wi-Fi) for the smart toilet.
+ *
+ * The device talks only to Memfault: diagnostics (coredumps, reboot reasons,
+ * metrics) are POSTed to Memfault over HTTPS, and FOTA is fetched directly from
+ * Memfault Release Management (also HTTPS). No nRF Cloud connection — a single
+ * cloud relationship, one TLS connection at a time.
  *
  * Runs in its own thread so the wake-word/DMIC loop in main.c is untouched:
- *   conn_mgr brings up Wi-Fi (using stored credentials) -> wait for L4 ->
- *   obtain time via NTP -> nrf_cloud_coap_connect(). Reconnects on drop.
+ *   conn_mgr brings up Wi-Fi (stored credentials) -> wait for L4 -> obtain time
+ *   via NTP (TLS cert validity) -> periodically upload Memfault data and check
+ *   Memfault for a FOTA update. Memfault root certs are provisioned at boot via
+ *   CONFIG_MEMFAULT_NCS_PROVISION_CERTIFICATES.
  */
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/net/coap.h>
-#include <zephyr/net/coap_client.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/dfu/mcuboot.h>
 
-#include <app_version.h>
-#include <cJSON.h>
 #include <date_time.h>
-#include <net/nrf_cloud.h>
-#include <net/nrf_cloud_coap.h>
-#include <nrf_cloud_coap_transport.h>
-#include <net/fota_download.h>
-#include <net/nrf_cloud_fota_poll.h>
-#include <zephyr/sys/reboot.h>
 
 #include <memfault/core/data_packetizer.h>
+#include <memfault/metrics/metrics.h>
 #include <memfault/ports/zephyr/http.h>
+#include <memfault/ports/zephyr/fota.h>
 
-#include "actuator.h"
 #include "cloud.h"
 
 LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 
-#define L4_EVENT_MASK (NET_EVENT_L4_CONNECTED | NET_EVENT_L4_DISCONNECTED)
+#define L4_EVENT_MASK	    (NET_EVENT_L4_CONNECTED | NET_EVENT_L4_DISCONNECTED)
 #define DATE_TIME_TIMEOUT_S 30
-#define RECONNECT_DELAY_S   30
-/* How often, while idle and connected, to poll the shadow for a remote-flush
- * command. CoAP is client-driven, so remote control is poll-based.
- */
-#define REMOTE_POLL_S	    15
-/* How often, while connected, to ask nRF Cloud whether a FOTA job is queued. */
+/* How often, while connected, to drain pending Memfault data to the cloud. */
+#define UPLOAD_TICK_S	    15
+/* How often, while connected, to ask Memfault whether a FOTA update is ready. */
 #define FOTA_CHECK_S	    120
 
-/* nRF Cloud appId for the flush telemetry messages. */
-#define FLUSH_APP_ID	    "FLUSH"
 /* Persisted total flush count: settings key "toilet/flush_count". */
 #define FLUSH_COUNT_KEY	    "toilet/flush_count"
 
@@ -60,18 +54,10 @@ static K_SEM_DEFINE(date_time_ready_sem, 0, 1);
 static K_SEM_DEFINE(flush_event_sem, 0, 1);
 static struct net_mgmt_event_callback l4_cb;
 static atomic_t connected = ATOMIC_INIT(0);
-/* Flushes that have happened but not yet been reported to the cloud. */
+/* Flushes that have happened but not yet been recorded. */
 static atomic_t flush_pending = ATOMIC_INIT(0);
 /* Total lifetime flush count, persisted in NVS via the settings subsystem. */
 static uint32_t flush_count;
-
-static void fota_reboot(enum nrf_cloud_fota_reboot_status status);
-/* FOTA polling context; the reboot handler applies the update on the next boot. */
-static struct nrf_cloud_fota_poll_ctx fota_ctx = {
-	.reboot_fn = fota_reboot,
-};
-/* Next uptime (ms) at which to poll nRF Cloud for a FOTA job. */
-static int64_t next_fota_check;
 
 bool cloud_is_connected(void)
 {
@@ -96,84 +82,34 @@ static int toilet_settings_set(const char *name, size_t len, settings_read_cb re
 
 SETTINGS_STATIC_HANDLER_DEFINE(toilet, "toilet", NULL, toilet_settings_set, NULL, NULL);
 
-/* Report any pending flush events (one device message each) and push the
- * latest flush count to the device shadow. Runs only on the cloud thread.
+/* Publish the lifetime flush count as a Memfault metric so it appears in the
+ * device timeline. Called every tick so each heartbeat carries the latest
+ * value even in intervals with no flush.
  */
-static void report_flushes(void)
+static void publish_flush_count(void)
+{
+	memfault_metrics_heartbeat_set_unsigned(MEMFAULT_METRICS_KEY(flush_count), flush_count);
+}
+
+/* Record any pending flush events: bump the lifetime count, persist it to NVS,
+ * and refresh the Memfault metric. Runs only on the cloud thread.
+ */
+static void record_flushes(void)
 {
 	while (atomic_get(&flush_pending) > 0) {
 		atomic_dec(&flush_pending);
 		flush_count++;
 		(void)settings_save_one(FLUSH_COUNT_KEY, &flush_count, sizeof(flush_count));
-
-		int64_t ts = 0;
-		(void)date_time_now(&ts);
-
-		int err = nrf_cloud_coap_sensor_send(FLUSH_APP_ID, (double)flush_count,
-						     ts > 0 ? ts : 0, false);
-		if (err) {
-			LOG_WRN("Flush event send failed (err %d)", err);
-		} else {
-			LOG_INF("Reported flush #%u to nRF Cloud", flush_count);
-		}
+		LOG_INF("Flush #%u recorded", flush_count);
 	}
 
-	char json[40];
-
-	(void)snprintk(json, sizeof(json), "{\"flushCount\":%u}", flush_count);
-
-	int err = nrf_cloud_coap_shadow_state_update(json);
-
-	if (err) {
-		LOG_WRN("Shadow flushCount update failed (err %d)", err);
-	}
+	publish_flush_count();
 }
 
-/* Poll the shadow delta for a remote flush command: {"flush": true}. On
- * receipt, trigger a flush and reconcile the shadow so the delta clears.
+/* Drain pending Memfault data (reboot events, metrics, coredumps) to Memfault
+ * over HTTPS. Bounded internally by the Memfault HTTP port.
  */
-static void poll_remote_flush(void)
-{
-	static char buf[256];
-	size_t len = sizeof(buf);
-
-	int err = nrf_cloud_coap_shadow_get(buf, &len, true, COAP_CONTENT_FORMAT_APP_JSON);
-
-	if (err || len == 0) {
-		return;
-	}
-
-	buf[MIN(len, sizeof(buf) - 1)] = '\0';
-
-	cJSON *root = cJSON_Parse(buf);
-
-	if (!root) {
-		return;
-	}
-
-	/* The flush flag may arrive at the top level or nested under "state". */
-	cJSON *scope = cJSON_GetObjectItem(root, "state");
-
-	cJSON *flush = cJSON_GetObjectItem(scope ? scope : root, "flush");
-
-	if (cJSON_IsTrue(flush)) {
-		LOG_INF("Remote flush command received from nRF Cloud");
-		actuator_flush();
-		/* Match reported to desired so the delta is cleared. Toggle the
-		 * desired flag in the portal to issue another remote flush.
-		 */
-		(void)nrf_cloud_coap_shadow_state_update("{\"flush\":true}");
-	}
-
-	cJSON_Delete(root);
-}
-
-/* Forward pending Memfault data (reboot events, metrics, coredumps) via the
- * Memfault nRF Cloud CoAP integration (CONFIG_MEMFAULT_USE_NRF_CLOUD_COAP). It
- * posts to the "chunks" resource with the project key (CoAP option 2429) and is
- * the same transport the Memfault FOTA override uses for OTA queries.
- */
-static void upload_memfault_chunks(void)
+static void upload_memfault_data(void)
 {
 	if (!memfault_packetizer_data_available()) {
 		return;
@@ -186,60 +122,17 @@ static void upload_memfault_chunks(void)
 	}
 }
 
-/* Reboot to apply or finalize a FOTA update. The downloaded image lives in
- * the external-flash secondary slot; MCUboot swaps it into the internal
- * primary slot on the next boot.
- */
-static void fota_reboot(enum nrf_cloud_fota_reboot_status status)
-{
-	LOG_INF("FOTA reboot requested (status %d); rebooting to apply update", status);
-	k_sleep(K_SECONDS(1)); /* let the log line drain */
-	sys_reboot(SYS_REBOOT_COLD);
-}
-
-/* Advertise application-FOTA support to nRF Cloud (shadow serviceInfo
- * "fota_v2"). Without this the portal will not offer application updates.
- */
-static void advertise_fota_support(void)
-{
-	struct nrf_cloud_svc_info_fota fota = { .application = 1 };
-	struct nrf_cloud_svc_info svc = { .fota = &fota };
-
-	int err = nrf_cloud_coap_shadow_service_info_update(&svc);
-
-	if (err) {
-		LOG_WRN("FOTA service-info update failed (err %d)", err);
-	}
-
-	/* Report the running app version in the shadow at the standard location
-	 * (reported.device.deviceInfo.appVersion). nRF Cloud needs the device's
-	 * version to dispatch a queued FOTA job; without it the fota/exec/current
-	 * poll returns 4.04. The nrf_cloud device_status path only encodes
-	 * appVersion when CONFIG_MODEM_INFO is set, which this Wi-Fi unit lacks,
-	 * so write it directly.
-	 */
-	err = nrf_cloud_coap_shadow_state_update(
-		"{\"device\":{\"deviceInfo\":{\"appVersion\":\"" APP_VERSION_STRING "\"}}}");
-	if (err) {
-		LOG_WRN("appVersion shadow update failed (err %d)", err);
-	}
-}
-
-/* Ask nRF Cloud whether a FOTA job is queued; if so, download it over the
- * CoAP connection and stage it. A staged image triggers a reboot via
- * fota_reboot(), so this returns only when there is no job (-EAGAIN) or on
- * error. Runs on the cloud thread, so it shares the single nRF Cloud CoAP
- * client without concurrent access.
+/* Ask Memfault whether a newer release is deployed to this device's cohort. If
+ * so, memfault_zephyr_fota_start() downloads it (HTTPS) into the MCUboot
+ * secondary slot in external flash and reboots to apply it on success, so this
+ * only returns when there is no update (0) or on error (<0).
  */
 static void check_fota(void)
 {
-	int err = nrf_cloud_fota_poll_process(&fota_ctx);
+	int err = memfault_zephyr_fota_start();
 
-	if (err == -EAGAIN) {
-		return; /* no job queued */
-	}
 	if (err < 0) {
-		LOG_WRN("FOTA poll failed (err %d)", err);
+		LOG_WRN("Memfault FOTA check failed (err %d)", err);
 	}
 }
 
@@ -252,6 +145,7 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 	switch (event) {
 	case NET_EVENT_L4_CONNECTED:
 		LOG_INF("Network connectivity gained");
+		atomic_set(&connected, 1);
 		k_sem_give(&network_ready_sem);
 		break;
 	case NET_EVENT_L4_DISCONNECTED:
@@ -272,33 +166,17 @@ static void date_time_evt_handler(const struct date_time_evt *evt)
 
 static void cloud_thread_fn(void)
 {
-	int err;
-
-	err = nrf_cloud_coap_init();
-	if (err) {
-		LOG_ERR("nrf_cloud_coap_init failed (err %d)", err);
-		return;
-	}
-
 	/* Restore the persisted lifetime flush count from NVS. */
 	(void)settings_subsys_init();
 	(void)settings_load_subtree("toilet");
 	LOG_INF("Flush count restored: %u", flush_count);
-
-	/* FOTA polling assistance: downloads + stages images to the MCUboot
-	 * secondary slot (in external flash). Non-fatal if it fails to init.
-	 */
-	err = nrf_cloud_fota_poll_init(&fota_ctx);
-	if (err) {
-		LOG_WRN("nrf_cloud_fota_poll_init failed (err %d); FOTA disabled", err);
-	}
 
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
 	net_mgmt_add_event_callback(&l4_cb);
 	date_time_register_handler(date_time_evt_handler);
 
 	/* Bring all interfaces up and request connectivity (Wi-Fi uses the
-	 * credentials stored via the `wifi cred` shell).
+	 * credentials stored via the `wifi cred` shell / static config).
 	 */
 	(void)conn_mgr_all_if_up(true);
 	(void)conn_mgr_all_if_connect(true);
@@ -307,48 +185,54 @@ static void cloud_thread_fn(void)
 		LOG_INF("Waiting for network...");
 		k_sem_take(&network_ready_sem, K_FOREVER);
 
-		LOG_INF("Obtaining date/time over NTP...");
-		(void)date_time_update_async(date_time_evt_handler);
-		if (k_sem_take(&date_time_ready_sem, K_SECONDS(DATE_TIME_TIMEOUT_S)) != 0) {
+		/* TLS to Memfault needs a valid wall clock for certificate
+		 * date checks; retry NTP until it lands (or the link drops).
+		 */
+		while (atomic_get(&connected) == 1) {
+			LOG_INF("Obtaining date/time over NTP...");
+			(void)date_time_update_async(date_time_evt_handler);
+			if (k_sem_take(&date_time_ready_sem, K_SECONDS(DATE_TIME_TIMEOUT_S)) == 0) {
+				break;
+			}
 			LOG_WRN("Failed to obtain date/time, retrying");
+		}
+		if (atomic_get(&connected) != 1) {
 			continue;
 		}
 
-		LOG_INF("Connecting to nRF Cloud...");
-		err = nrf_cloud_coap_connect(NULL);
-		if (err) {
-			LOG_ERR("nrf_cloud_coap_connect failed (err %d), retry in %ds",
-				err, RECONNECT_DELAY_S);
-			k_sleep(K_SECONDS(RECONNECT_DELAY_S));
-			continue;
+		LOG_INF("Network ready; uploading to Memfault over HTTPS");
+
+		/* Reaching the network (Wi-Fi + valid time for TLS) proves this
+		 * image boots and connects, so confirm it with MCUboot. The
+		 * bootloader runs a freshly-swapped image in test mode
+		 * (CONFIG_BOOT_SWAP_USING_MOVE) and reverts to the previous image
+		 * on the next reset unless it is confirmed; without this a FOTA
+		 * update is undone by the first power-cycle.
+		 */
+		if (!boot_is_img_confirmed()) {
+			int cerr = boot_write_img_confirmed();
+
+			if (cerr) {
+				LOG_ERR("Failed to confirm running image (err %d)", cerr);
+			} else {
+				LOG_INF("Running image confirmed (FOTA update made permanent)");
+			}
 		}
 
-		LOG_INF("Connected to nRF Cloud");
-		atomic_set(&connected, 1);
-
-		/* Finalize a FOTA job that completed just before a reboot (image
-		 * validation), then tell the cloud we accept application updates.
-		 */
-		(void)nrf_cloud_fota_poll_process_pending(&fota_ctx);
-		advertise_fota_support();
-		next_fota_check = 0; /* check for a job shortly after connecting */
-
-		/* Push the current flush count to the shadow on (re)connect, then
-		 * service flush events as they occur and poll for remote-flush
-		 * commands while idle.
-		 */
-		report_flushes();
 		/* Push any data captured before/at this connection (e.g. the
-		 * reboot reason event) to Memfault promptly.
+		 * reboot reason event) promptly, and seed the flush metric.
 		 */
-		upload_memfault_chunks();
+		publish_flush_count();
+		upload_memfault_data();
+
+		int64_t next_fota_check = 0; /* check shortly after coming up */
 
 		while (atomic_get(&connected) == 1) {
-			if (k_sem_take(&flush_event_sem, K_SECONDS(REMOTE_POLL_S)) == 0) {
-				report_flushes();
+			if (k_sem_take(&flush_event_sem, K_SECONDS(UPLOAD_TICK_S)) == 0) {
+				record_flushes();
 			} else {
-				poll_remote_flush();
-				upload_memfault_chunks();
+				publish_flush_count();
+				upload_memfault_data();
 				if (k_uptime_get() >= next_fota_check) {
 					check_fota();
 					next_fota_check = k_uptime_get() +
@@ -358,13 +242,11 @@ static void cloud_thread_fn(void)
 		}
 
 		LOG_INF("Disconnected; will re-establish when network returns");
-		(void)nrf_cloud_coap_disconnect();
 	}
 }
 
-/* Runs the DTLS handshake + ECDSA JWT signing, the cJSON shadow/message
- * encoding, and (when a job is queued) FOTA job-document parsing and download
- * coordination. 8 KB covers the added FOTA work; the actual image download
- * runs on the downloader's own thread (CONFIG_DOWNLOADER_STACK_SIZE).
+/* Stack covers the Memfault HTTPS client (TLS handshake + chunk POST) and, when
+ * an update is queued, FOTA job parsing; the image download itself runs on the
+ * downloader's own thread (CONFIG_DOWNLOADER_STACK_SIZE).
  */
 K_THREAD_DEFINE(cloud_tid, 8192, cloud_thread_fn, NULL, NULL, NULL, 7, 0, 0);

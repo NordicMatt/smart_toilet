@@ -1,6 +1,6 @@
 /*
- * Application Memfault heartbeat metrics (forwarded to Memfault via nRF Cloud
- * CoAP). Used to diagnose wake-word detection remotely, off wall USB with no
+ * Application Memfault heartbeat metrics (uploaded directly to Memfault over
+ * HTTPS). Used to diagnose wake-word detection remotely, off wall USB with no
  * serial attached. Reported once per heartbeat interval
  * (CONFIG_MEMFAULT_METRICS_HEARTBEAT_INTERVAL_SECS).
  *
@@ -25,3 +25,8 @@ MEMFAULT_METRICS_KEY_DEFINE(ww_prob_max_pct, kMemfaultMetricType_Unsigned)
 
 /* Confirmed wake-word detections during the interval. */
 MEMFAULT_METRICS_KEY_DEFINE(ww_detections, kMemfaultMetricType_Unsigned)
+
+/* Lifetime toilet flush count (persisted in NVS). Reported as a metric now that
+ * the device talks only to Memfault — there is no nRF Cloud shadow/message
+ * channel. Set each cloud-thread tick so every heartbeat carries the latest. */
+MEMFAULT_METRICS_KEY_DEFINE(flush_count, kMemfaultMetricType_Unsigned)
