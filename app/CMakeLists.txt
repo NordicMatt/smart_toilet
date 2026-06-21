@@ -56,6 +56,11 @@ target_sources_ifdef(CONFIG_MEMFAULT app PRIVATE src/audio_telemetry.c)
 # Application Memfault heartbeat metric definitions
 # (memfault_metrics_heartbeat_config.def lives in config/).
 zephyr_include_directories_ifdef(CONFIG_MEMFAULT config)
-target_sources_ifdef(CONFIG_APP_AUDIO_STATS app PRIVATE src/audio_stats.c)
+# Audio level stats: needed for the per-second UART log (APP_AUDIO_STATS) and/or
+# the Memfault audio metrics (MEMFAULT, fed via audio_telemetry). Compile if
+# either is enabled so logging can be turned off without losing the metrics.
+if(CONFIG_APP_AUDIO_STATS OR CONFIG_MEMFAULT)
+  target_sources(app PRIVATE src/audio_stats.c)
+endif()
 target_sources_ifdef(CONFIG_APP_AUDIO_PROC app PRIVATE src/audio_proc.c)
 target_sources_ifdef(CONFIG_APP_AUDIO_SNAP app PRIVATE src/audio_snap.c)

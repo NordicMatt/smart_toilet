@@ -116,6 +116,13 @@ VER="1.2.0+0"
   upload-ota-payload --hardware-version nrf54lm20dk --software-type smart-toilet \
   --software-version "$VER" build/app.signed.bin
 
+# REQUIRED: upload the ELF symbols for this build, or Memfault cannot decode the
+# heartbeat metrics (audio_*, ww_*, flush_count, and the built-in metrics) — it
+# maps metric indices to names using the symbol file. Without this, the device
+# uploads heartbeats successfully but NO metrics appear in the timeline.
+~/.memfault-venv/bin/memfault --org-token "$TOK" --org "$ORG" --project "$PROJ" \
+  upload-mcu-symbols build/app/zephyr/zephyr.elf
+
 ~/.memfault-venv/bin/memfault --email matthew.heins@nordicsemi.no --password "$MTOK" \
   --org "$ORG" --project "$PROJ" \
   deploy-release --release-version "$VER" --cohort default
@@ -123,7 +130,9 @@ VER="1.2.0+0"
 
 `--hardware-version nrf54lm20dk` and `--software-type smart-toilet` must match the
 device's `CONFIG_MEMFAULT_NCS_HW_VERSION` / `CONFIG_MEMFAULT_NCS_FW_TYPE`, or the
-device's OTA query won't match the release.
+device's OTA query won't match the release. **Symbols must be uploaded for every
+build** (the `upload-mcu-symbols` step above) — it's also how coredumps
+symbolicate.
 
 ## Step 4 — The device updates itself
 

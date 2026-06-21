@@ -85,11 +85,17 @@ config APP_PDM_GAIN_DB
 	  -20 dBFS; lower it if APP_AUDIO_STATS reports clipped samples.
 
 config APP_AUDIO_STATS
-	bool "Log audio level and wake-word tuning statistics"
+	bool "Log audio level and wake-word tuning statistics to UART"
 	help
 	  Once per second, log the microphone peak/RMS level in dBFS with a
 	  clipped-sample count, and the peak wake-word probability and vote
 	  count. Use this to tune APP_PDM_GAIN_DB and the WW_* thresholds.
+
+	  This controls only the per-second UART logging. The Memfault audio
+	  metrics (audio_peak_dbfs, audio_noise_floor_dbfs, audio_clip_count,
+	  ww_prob_max_pct) are collected whenever CONFIG_MEMFAULT is enabled,
+	  independent of this option, so the logging can be turned off in a
+	  deployed build without losing remote diagnosis.
 
 config APP_AUDIO_HPF
 	bool "High-pass filter the mic audio"

@@ -52,11 +52,16 @@ void audio_stats_update(const void *buffer, size_t num_samples)
 	const float peak_db = 20.f * log10f(MAX(peak, 1) / 32768.f);
 	const float rms_db = 20.f * log10f(MAX(rms, 1.f) / 32768.f);
 
+#ifdef CONFIG_APP_AUDIO_STATS
 	LOG_INF("audio: peak %.1f dBFS, rms %.1f dBFS, clipped %u/%u", (double)peak_db,
 		(double)rms_db, clipped, window_samples);
+#endif
 
-	/* Forward levels to Memfault for remote (serial-less) diagnosis. */
+#ifdef CONFIG_MEMFAULT
+	/* Forward levels to Memfault for remote (serial-less) diagnosis. Independent
+	 * of APP_AUDIO_STATS so the metrics survive turning the UART logging off. */
 	audio_telemetry_levels(peak_db, rms_db, clipped);
+#endif
 
 	window_samples = 0;
 	peak = 0;

@@ -19,11 +19,13 @@
 extern "C" {
 #endif /* __cplusplus */
 
-#ifdef CONFIG_APP_AUDIO_STATS
+#if defined(CONFIG_APP_AUDIO_STATS) || defined(CONFIG_MEMFAULT)
 /**
  * @brief Accumulate level statistics for one block of 16-bit PCM audio.
  *
- * Logs peak/RMS level in dBFS and a clipped-sample count once per second.
+ * Once per second, computes the mic peak/RMS level in dBFS and a clipped-sample
+ * count. Logs them to UART when CONFIG_APP_AUDIO_STATS is set, and forwards them
+ * to the Memfault audio metrics when CONFIG_MEMFAULT is set.
  *
  * @param buffer Audio buffer of 16-bit signed samples.
  * @param num_samples Number of samples in the buffer.
@@ -33,7 +35,7 @@ void audio_stats_update(const void *buffer, size_t num_samples);
 static inline void audio_stats_update(const void *buffer, size_t num_samples)
 {
 }
-#endif /* CONFIG_APP_AUDIO_STATS */
+#endif /* CONFIG_APP_AUDIO_STATS || CONFIG_MEMFAULT */
 
 #ifdef __cplusplus
 }
