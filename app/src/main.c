@@ -72,8 +72,15 @@ static int ww_loop(void)
 			/* More data is needed. */
 			continue;
 		} else if (err < 0) {
-			LOG_ERR("Wakeword detection failed (err %d)", err);
-			return err;
+			/* Edge-AI feed/inference error (e.g. -EPERM). Re-init the model
+			 * state and keep listening — do NOT return, which would exit the
+			 * audio loop and leave the toilet deaf until reboot (same rationale
+			 * as the DMIC error above). dmic_read() at the loop top paces
+			 * retries.
+			 */
+			LOG_WRN("Wakeword detection error %d; resetting model and continuing", err);
+			ww_reset();
+			continue;
 		}
 
 		if (ww_detected) {
@@ -122,8 +129,12 @@ static int kws_loop(void)
 			/* More data is needed. */
 			continue;
 		} else if (err) {
-			LOG_ERR("Keyword spotting failed (err %d)", err);
-			return err;
+			/* Recover and keep going rather than exiting the audio loop.
+			 * See ww_loop() for rationale.
+			 */
+			LOG_WRN("Keyword spotting error %d; resetting model and continuing", err);
+			kws_reset();
+			continue;
 		}
 
 		if (prediction.valid) {
