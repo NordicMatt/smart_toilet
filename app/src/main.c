@@ -52,8 +52,15 @@ static int ww_loop(void)
 	while (true) {
 		err = dmic_read(dmic_dev, 0, &audio_buffer, &audio_buffer_size, DMIC_READ_TIMEOUT);
 		if (err < 0) {
-			LOG_ERR("Failed to read from DMIC (err %d)", err);
-			return err;
+			/* A DMIC read error is transient (e.g. -EAGAIN: no block within
+			 * the timeout, from a momentary CPU stall during Wi-Fi
+			 * reconnection). Skip this block and keep listening — a dropped
+			 * ~10 ms block is harmless. Crucially, do NOT return: that would
+			 * exit the audio loop and leave the toilet deaf until reboot.
+			 */
+			LOG_WRN("DMIC read error %d; skipping block", err);
+			k_sleep(K_MSEC(5));
+			continue;
 		}
 
 		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
@@ -98,8 +105,12 @@ static int kws_loop(void)
 	while (IS_ENABLED(CONFIG_APP_MODE_KWS_ONLY) || spotting_timeout > k_uptime_get_32()) {
 		err = dmic_read(dmic_dev, 0, &audio_buffer, &audio_buffer_size, DMIC_READ_TIMEOUT);
 		if (err < 0) {
-			LOG_ERR("Failed to read from DMIC (err %d)", err);
-			return err;
+			/* Transient (e.g. -EAGAIN). Skip the block and keep going rather
+			 * than exiting the audio loop. See ww_loop() for rationale.
+			 */
+			LOG_WRN("DMIC read error %d; skipping block", err);
+			k_sleep(K_MSEC(5));
+			continue;
 		}
 
 		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
