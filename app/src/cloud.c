@@ -25,11 +25,13 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/dfu/mcuboot.h>
 
 #include <date_time.h>
 
 #include <memfault/core/data_packetizer.h>
+#include <memfault/core/reboot_tracking.h>
 #include <memfault/metrics/metrics.h>
 #include <memfault/ports/zephyr/http.h>
 #include <memfault/ports/zephyr/fota.h>
@@ -44,6 +46,16 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 #define UPLOAD_TICK_S	    15
 /* How often, while connected, to ask Memfault whether a FOTA update is ready. */
 #define FOTA_CHECK_S	    120
+/* Reboot if the cloud thread makes no progress for this long while the network
+ * is up. The Memfault HTTP client's TLS connect() has no socket timeout, so a
+ * network hiccup mid-handshake can park this thread forever — silently killing
+ * heartbeat uploads and FOTA checks while everything else (Wi-Fi, audio, motor)
+ * keeps running. Must comfortably exceed the longest legitimate blocking
+ * operation (a full FOTA image download, ~3.5 min measured).
+ */
+#define CLOUD_STALL_REBOOT_S (15 * 60)
+/* How often the stall monitor samples the progress timestamp. */
+#define STALL_CHECK_PERIOD_S 60
 
 /* Persisted total flush count: settings key "toilet/flush_count". */
 #define FLUSH_COUNT_KEY	    "toilet/flush_count"
@@ -58,6 +70,42 @@ static atomic_t connected = ATOMIC_INIT(0);
 static atomic_t flush_pending = ATOMIC_INIT(0);
 /* Total lifetime flush count, persisted in NVS via the settings subsystem. */
 static uint32_t flush_count;
+/* Uptime (seconds) of the cloud thread's last sign of life, fed at every loop
+ * iteration. Read by the stall monitor timer.
+ */
+static atomic_t last_progress_s;
+
+static void note_progress(void)
+{
+	atomic_set(&last_progress_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
+}
+
+/* Runs in timer (ISR) context. If the network is up but the cloud thread has
+ * been stuck for CLOUD_STALL_REBOOT_S, it is almost certainly parked in an
+ * unbounded socket call; there is no way to safely kill a thread blocked in a
+ * syscall, so reboot. The voice path works offline and recovers in ~16 s, and
+ * the SoftwareWatchdog reboot reason makes the stall visible in Memfault.
+ */
+static void stall_monitor_expiry(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+
+	if (atomic_get(&connected) != 1) {
+		return;
+	}
+
+	const uint32_t now_s = k_uptime_get_32() / MSEC_PER_SEC;
+	const uint32_t last_s = (uint32_t)atomic_get(&last_progress_s);
+
+	if ((now_s - last_s) < CLOUD_STALL_REBOOT_S) {
+		return;
+	}
+
+	MEMFAULT_REBOOT_MARK_RESET_IMMINENT(kMfltRebootReason_SoftwareWatchdog);
+	sys_reboot(SYS_REBOOT_WARM);
+}
+
+static K_TIMER_DEFINE(cloud_stall_timer, stall_monitor_expiry, NULL);
 
 bool cloud_is_connected(void)
 {
@@ -145,6 +193,8 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 	switch (event) {
 	case NET_EVENT_L4_CONNECTED:
 		LOG_INF("Network connectivity gained");
+		/* Fresh progress baseline before the stall monitor arms. */
+		note_progress();
 		atomic_set(&connected, 1);
 		k_sem_give(&network_ready_sem);
 		break;
@@ -181,6 +231,10 @@ static void cloud_thread_fn(void)
 	(void)conn_mgr_all_if_up(true);
 	(void)conn_mgr_all_if_connect(true);
 
+	note_progress();
+	k_timer_start(&cloud_stall_timer, K_SECONDS(STALL_CHECK_PERIOD_S),
+		      K_SECONDS(STALL_CHECK_PERIOD_S));
+
 	while (true) {
 		LOG_INF("Waiting for network...");
 		k_sem_take(&network_ready_sem, K_FOREVER);
@@ -189,6 +243,8 @@ static void cloud_thread_fn(void)
 		 * date checks; retry NTP until it lands (or the link drops).
 		 */
 		while (atomic_get(&connected) == 1) {
+			/* NTP retries are alive-and-logging, not a silent stall. */
+			note_progress();
 			LOG_INF("Obtaining date/time over NTP...");
 			(void)date_time_update_async(date_time_evt_handler);
 			if (k_sem_take(&date_time_ready_sem, K_SECONDS(DATE_TIME_TIMEOUT_S)) == 0) {
@@ -228,6 +284,7 @@ static void cloud_thread_fn(void)
 		int64_t next_fota_check = 0; /* check shortly after coming up */
 
 		while (atomic_get(&connected) == 1) {
+			note_progress();
 			if (k_sem_take(&flush_event_sem, K_SECONDS(UPLOAD_TICK_S)) == 0) {
 				record_flushes();
 			} else {
