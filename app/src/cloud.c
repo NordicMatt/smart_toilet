@@ -32,6 +32,7 @@
 
 #include <memfault/core/data_packetizer.h>
 #include <memfault/core/reboot_tracking.h>
+#include <memfault/metrics/connectivity.h>
 #include <memfault/metrics/metrics.h>
 #include <memfault/ports/zephyr/http.h>
 #include <memfault/ports/zephyr/fota.h>
@@ -196,11 +197,15 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 		/* Fresh progress baseline before the stall monitor arms. */
 		note_progress();
 		atomic_set(&connected, 1);
+		memfault_metrics_connectivity_connected_state_change(
+			kMemfaultMetricsConnectivityState_Connected);
 		k_sem_give(&network_ready_sem);
 		break;
 	case NET_EVENT_L4_DISCONNECTED:
 		LOG_INF("Network connectivity lost");
 		atomic_set(&connected, 0);
+		memfault_metrics_connectivity_connected_state_change(
+			kMemfaultMetricsConnectivityState_ConnectionLost);
 		break;
 	default:
 		break;
@@ -230,6 +235,8 @@ static void cloud_thread_fn(void)
 	 */
 	(void)conn_mgr_all_if_up(true);
 	(void)conn_mgr_all_if_connect(true);
+	memfault_metrics_connectivity_connected_state_change(
+		kMemfaultMetricsConnectivityState_Started);
 
 	note_progress();
 	k_timer_start(&cloud_stall_timer, K_SECONDS(STALL_CHECK_PERIOD_S),
