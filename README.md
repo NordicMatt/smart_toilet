@@ -222,17 +222,23 @@ UART dump conflicts with the shield's VCOM0 console.)
 ## Build & flash
 
 Built against an NCS **v3.3.1** tree with the nRF Edge AI add-on passed as extra
-Zephyr modules, the Wi-Fi shield, the cloud config overlay, and the Memfault
-project key (kept out of the repo, e.g. in `~/.memfault_project_key`):
+Zephyr modules, the Wi-Fi shield, the cloud config overlay, and three secrets kept
+out of the repo entirely (`~/.memfault_project_key`, `~/.wifi_ssid`,
+`~/.wifi_password` — none of these are committed; cloud.conf only enables
+`CONFIG_WIFI_CREDENTIALS_STATIC`, it never contains the actual SSID/password):
 
 ```sh
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
+SSID=$(tr -d '\n' < ~/.wifi_ssid)
+WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 \
     -DEXTRA_CONF_FILE=cloud.conf \
     -DZEPHYR_EXTRA_MODULES=<addon>/edge-ai \
-    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\"
+    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\" \
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_SSID=\"$SSID\" \
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_PASSWORD=\"$WIFI_PW\"
 ```
 
 Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached; add

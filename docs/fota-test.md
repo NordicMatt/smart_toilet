@@ -56,15 +56,21 @@ Two ways, no UART required:
 A device can only pull from Memfault once it is already running a build with the
 Memfault FOTA client. The first such image must be flashed over J-Link. Build and
 flash with a chip erase (partition layout differs from `main`); the Memfault
-project key is passed at build time from `~/.memfault_project_key`:
+project key and Wi-Fi credentials are passed at build time from
+`~/.memfault_project_key`, `~/.wifi_ssid`, and `~/.wifi_password` (none of these
+are committed to the repo):
 
 ```sh
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
+SSID=$(tr -d '\n' < ~/.wifi_ssid)
+WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 -DEXTRA_CONF_FILE=$PWD/app/cloud.conf \
     -DZEPHYR_EXTRA_MODULES=~/edge_ai_addon/edge-ai \
-    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\"
+    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\" \
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_SSID=\"$SSID\" \
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_PASSWORD=\"$WIFI_PW\"
 DLL=~/.local/jlink/opt/SEGGER/JLink_V950/libjlinkarm.so
 nrfutil device erase   --jlink-dll "$DLL" --serial-number 1051844848
 nrfutil device program --jlink-dll "$DLL" --firmware build/merged.hex --serial-number 1051844848
@@ -84,11 +90,15 @@ build (NO flash — we want the signed binary only):
 
 ```sh
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
+SSID=$(tr -d '\n' < ~/.wifi_ssid)
+WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
 nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 -DEXTRA_CONF_FILE=$PWD/app/cloud.conf \
     -DZEPHYR_EXTRA_MODULES=~/edge_ai_addon/edge-ai \
-    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\"
+    -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\" \
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_SSID=\"$SSID\" \
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_PASSWORD=\"$WIFI_PW\"
 ```
 
 The OTA payload is the **raw signed image** `app.signed.bin` (inside
