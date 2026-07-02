@@ -1,0 +1,11 @@
+bulkOpsRequestId,01KWG71M3J986FWMWA9HTNEFKC
+endpoint,ONBOARD_DEVICES
+status,SUCCEEDED
+requestedAt,2026-07-02T01:28:12.146465737Z
+completedAt,2026-07-02T01:28:12.677649247Z
+uploadedDataUrl,https://api.nrfcloud.com/v1/bulk-ops-assets/e0a6cccb-0a56-4f86-8c33-2fb59acb0a08/data-01KWG71M3J986FWMWA9HTNEFKC.csv
+Error count,0
+
+Device ID,Result
+51AF63E40BF36313,OK
+779FC2ACB9E4A24E,OK
