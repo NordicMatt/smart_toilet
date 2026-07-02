@@ -57,6 +57,9 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 #define CLOUD_STALL_REBOOT_S (15 * 60)
 /* How often the stall monitor samples the progress timestamp. */
 #define STALL_CHECK_PERIOD_S 60
+/* Bounded retries for the one-shot network interface bring-up at startup. */
+#define NET_BRINGUP_MAX_ATTEMPTS 5
+#define NET_BRINGUP_RETRY_DELAY	 K_SECONDS(5)
 
 /* Persisted total flush count: settings key "toilet/flush_count". */
 #define FLUSH_COUNT_KEY	    "toilet/flush_count"
@@ -148,7 +151,13 @@ static void record_flushes(void)
 	while (atomic_get(&flush_pending) > 0) {
 		atomic_dec(&flush_pending);
 		flush_count++;
-		(void)settings_save_one(FLUSH_COUNT_KEY, &flush_count, sizeof(flush_count));
+
+		int err = settings_save_one(FLUSH_COUNT_KEY, &flush_count, sizeof(flush_count));
+
+		if (err) {
+			LOG_WRN("Failed to persist flush count %u (err %d); will retry next flush",
+				flush_count, err);
+		}
 		LOG_INF("Flush #%u recorded", flush_count);
 	}
 
@@ -221,9 +230,21 @@ static void date_time_evt_handler(const struct date_time_evt *evt)
 
 static void cloud_thread_fn(void)
 {
-	/* Restore the persisted lifetime flush count from NVS. */
-	(void)settings_subsys_init();
-	(void)settings_load_subtree("toilet");
+	/* Restore the persisted lifetime flush count from NVS. Best-effort: a
+	 * failure here only means the flush counter starts at 0, not a fatal
+	 * condition, so log and continue.
+	 */
+	int err = settings_subsys_init();
+
+	if (err) {
+		LOG_WRN("Settings subsystem init failed (err %d); flush count may not "
+			"restore", err);
+	} else {
+		err = settings_load_subtree("toilet");
+		if (err) {
+			LOG_WRN("Failed to load persisted flush count (err %d)", err);
+		}
+	}
 	LOG_INF("Flush count restored: %u", flush_count);
 
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
@@ -231,10 +252,35 @@ static void cloud_thread_fn(void)
 	date_time_register_handler(date_time_evt_handler);
 
 	/* Bring all interfaces up and request connectivity (Wi-Fi uses the
-	 * credentials stored via the `wifi cred` shell / static config).
+	 * credentials stored via the `wifi cred` shell / static config). This is
+	 * one-shot startup: if either call fails outright, the thread would
+	 * otherwise wait on network_ready_sem forever with `connected` never set,
+	 * which the stall monitor cannot catch (it only fires while connected).
+	 *
+	 * Retry a bounded number of times (transient boot-order races resolve
+	 * quickly) rather than rebooting: a deterministic failure (missing Wi-Fi
+	 * firmware, bad config) would otherwise reboot forever, starving the
+	 * audio/flush path that must keep working even with no network at all.
+	 * If it never comes up, log loudly and fall through - the thread parks
+	 * on network_ready_sem, same as an unrecoverable link loss, and voice/
+	 * flush continue unaffected.
 	 */
-	(void)conn_mgr_all_if_up(true);
-	(void)conn_mgr_all_if_connect(true);
+	bool net_up = false;
+
+	for (int attempt = 1; attempt <= NET_BRINGUP_MAX_ATTEMPTS; attempt++) {
+		if (conn_mgr_all_if_up(true) == 0 && conn_mgr_all_if_connect(true) == 0) {
+			net_up = true;
+			break;
+		}
+		LOG_WRN("Failed to bring up network interfaces (attempt %d/%d)", attempt,
+			NET_BRINGUP_MAX_ATTEMPTS);
+		k_sleep(NET_BRINGUP_RETRY_DELAY);
+	}
+
+	if (!net_up) {
+		LOG_ERR("Network interfaces never came up after %d attempts; cloud "
+			"connectivity unavailable this boot", NET_BRINGUP_MAX_ATTEMPTS);
+	}
 	memfault_metrics_connectivity_connected_state_change(
 		kMemfaultMetricsConnectivityState_Started);
 

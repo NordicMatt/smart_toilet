@@ -215,9 +215,10 @@ Say the wake word from the normal use position and read the lines for that secon
   `CONFIG_WW_HISTORY_SIZE`.
 
 Set `CONFIG_APP_AUDIO_STATS=n` for the deployed build. (The `CONFIG_APP_AUDIO_SNAP`
-audio-recording feature is **disabled in the Wi-Fi build** — its multi-second
-capture buffer does not fit alongside the Wi-Fi/cloud/Memfault stacks, and its raw
-UART dump conflicts with the shield's VCOM0 console.)
+audio-recording feature is currently **non-functional in any build variant** —
+its raw-UART backend was removed from `control_output.c` when that file was
+rewritten to share VCOM0 with printk logging, and never reimplemented. The
+Kconfig option is gated off until it's restored; see `app/Kconfig`.)
 
 ## Build & flash
 

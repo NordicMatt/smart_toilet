@@ -30,3 +30,8 @@ MEMFAULT_METRICS_KEY_DEFINE(ww_detections, kMemfaultMetricType_Unsigned)
  * the device talks only to Memfault — there is no nRF Cloud shadow/message
  * channel. Set each cloud-thread tick so every heartbeat carries the latest. */
 MEMFAULT_METRICS_KEY_DEFINE(flush_count, kMemfaultMetricType_Unsigned)
+
+/* Motor runs that hit the safety timeout without ever seeing the magnet leave
+ * home (possible jam/stuck sensor). Not persisted - a spike in this per
+ * interval is the signal, not the lifetime total. */
+MEMFAULT_METRICS_KEY_DEFINE(flush_jam_count, kMemfaultMetricType_Unsigned)

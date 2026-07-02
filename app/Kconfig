@@ -127,12 +127,26 @@ config APP_AUDIO_PROC
 
 config APP_AUDIO_SNAP
 	bool "Audio snapshot recording over the control UART"
+	# The async-UART raw-output/raw-input API this feature depends on
+	# (control_output_raw_begin/tx/end, control_input_register) was removed
+	# from control_output.c when it was rewritten to share VCOM0 with printk
+	# logging (see control_output.c's file header). Nothing currently
+	# implements those symbols, so enabling this option is a link error in
+	# every build variant, not just the Wi-Fi one. Depend on an option that
+	# does not exist so it cannot be selected until reimplemented.
+	depends on APP_AUDIO_SNAP_BACKEND_IMPLEMENTED
 	help
 	  On receiving the trigger byte 'S' on the control UART (VCOM0),
 	  record APP_AUDIO_SNAP_SECONDS of the processed mic audio to RAM,
 	  then dump it back over the same UART as an "AUDIO_SNAP <bytes>"
 	  header followed by raw 16-bit little-endian PCM at 16 kHz. Save it
 	  as a .wav with: tools/uart_monitor.py snap --port <VCOM0>.
+
+	  Currently NON-FUNCTIONAL: its backing raw-UART implementation in
+	  control_output.c was removed and never restored (see git history for
+	  control_output.c). Selecting this option is disabled until that is
+	  reimplemented, so builds fail fast at configure time instead of at
+	  link time.
 
 config APP_AUDIO_SNAP_SECONDS
 	int "Audio snapshot length (seconds)"

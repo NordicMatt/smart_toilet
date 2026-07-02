@@ -8,6 +8,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/reboot.h>
+
+#include <memfault/core/reboot_tracking.h>
+#include <memfault/metrics/metrics.h>
 
 #include "actuator.h"
 #include "cloud.h"
@@ -74,14 +78,47 @@ static bool hall_present(bool *state, uint8_t *cnt)
 	return *state;
 }
 
+/* Force the motor off. There is no safe way to leave a flush cycle with the
+ * MOSFET possibly still driven, so a write failure gets one immediate retry
+ * and then a reboot: actuator_init() reconfigures the pin GPIO_OUTPUT_INACTIVE
+ * on every boot, which is the only way left to guarantee the motor de-energizes.
+ */
+static void motor_off_or_reboot(void)
+{
+	if (gpio_pin_set_dt(&motor_gpio, 0) == 0) {
+		return;
+	}
+
+	if (gpio_pin_set_dt(&motor_gpio, 0) == 0) {
+		return;
+	}
+
+	LOG_ERR("Flush: motor-off GPIO write failed twice; rebooting to force it safe");
+	MEMFAULT_REBOOT_MARK_RESET_IMMINENT(kMfltRebootReason_HardFault);
+	sys_reboot(SYS_REBOOT_WARM);
+}
+
 static void motor_run(void)
 {
 	uint8_t cnt = 0;
 	/* Seed the debounced state with the level at start-up. */
 	bool present = gpio_pin_get_dt(&hall_gpio) > 0;
+	/* The magnet must be observed clear at least once before a later
+	 * "present" reading is trusted as the real home-return stop condition.
+	 * Without this, a magnet that never leaves home (jam, stuck sensor,
+	 * shorted line) stops the motor at the first blanking-window check and
+	 * gets reported as a completed flush.
+	 */
+	bool seen_clear = !present;
 
-	(void)gpio_pin_set_dt(&motor_gpio, 1);
+	if (gpio_pin_set_dt(&motor_gpio, 1) != 0) {
+		LOG_ERR("Flush: motor-on GPIO write failed; aborting flush attempt");
+		atomic_set(&motor_active, 0);
+		return;
+	}
+
 	const int64_t start = k_uptime_get();
+	bool jammed = false;
 
 	LOG_INF("Flush: motor on (magnet %s at start)", present ? "present" : "clear");
 
@@ -91,27 +128,48 @@ static void motor_run(void)
 		if (elapsed > MOTOR_SAFETY_MS) {
 			LOG_WRN("Flush: safety timeout (%d ms), forcing motor off",
 				MOTOR_SAFETY_MS);
+			jammed = true;
 			break;
 		}
 
 		present = hall_present(&present, &cnt);
 
-		/* Ignore the Hall during the blanking window, then stop the next
-		 * time the magnet reaches the sensor (the home position).
+		/* Track "has ever debounced clear" unconditionally, not just after
+		 * blanking ends - a real cycle fast enough to leave and return home
+		 * within the blanking window must still count as having cleared.
+		 * Only the STOP decision itself is gated on the blanking window (to
+		 * ignore start-up jitter as the shaft first leaves home).
 		 */
-		if (elapsed >= HALL_BLANKING_MS && present) {
-			LOG_INF("Flush: magnet sensed at +%lld ms, motor off after %d ms overrun",
-				elapsed, HALL_OVERRUN_MS);
+		if (!present) {
+			seen_clear = true;
+		} else if (elapsed >= HALL_BLANKING_MS && seen_clear) {
+			/* Genuine home return: the magnet left and came back. */
+			LOG_INF("Flush: magnet sensed at +%lld ms, motor off after "
+				"%d ms overrun", elapsed, HALL_OVERRUN_MS);
 			k_msleep(HALL_OVERRUN_MS);
 			break;
 		}
+		/* Else: magnet has been present since start and never cleared - the
+		 * shaft hasn't moved. Keep running until the safety timeout; do not
+		 * treat this as a stop condition.
+		 */
 
 		k_msleep(MOTOR_POLL_MS);
 	}
 
-	(void)gpio_pin_set_dt(&motor_gpio, 0);
+	motor_off_or_reboot();
 	lockout_until = k_uptime_get() + FLUSH_LOCKOUT_MS;
 	atomic_set(&motor_active, 0);
+
+	if (jammed) {
+		/* Don't count a safety-timeout stop as a completed flush - the
+		 * shaft may never have moved, so the toilet likely wasn't flushed.
+		 */
+		LOG_ERR("Flush: possible jam (magnet never left home); not reporting "
+			"as a completed flush");
+		memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(flush_jam_count), 1);
+		return;
+	}
 
 	/* Report the completed flush to nRF Cloud (non-blocking). */
 	cloud_report_flush();
