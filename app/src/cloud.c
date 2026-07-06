@@ -63,6 +63,16 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
  * successful connect, so a unit simply out of range never reboot-loops: worst
  * case one reboot per outage, then it parks and the offline voice path runs. */
 #define DISCONNECT_REBOOT_S  (10 * 60)
+/* Reboot (with a coredump) if NO data has actually reached Memfault for this long
+ * despite having uploaded at least once this boot. The cloud-stall and
+ * disconnection watchdogs trust proxies (the cloud thread's self-progress and
+ * conn_mgr's "connected" flag); this watches the real goal -- a confirmed upload
+ * -- so it catches a wedge in the seam between them (e.g. L4 stays nominally
+ * connected while nothing gets through: the observed Toilet #2 soft-hang). The
+ * coredump captures the stuck thread's backtrace. Kept above DISCONNECT_REBOOT_S
+ * (a genuine disconnect reboots via that first) and well above two heartbeat
+ * intervals + a FOTA download, so a slow cycle never trips it. */
+#define UPLOAD_WATCHDOG_S    (20 * 60)
 /* How often the stall monitor samples the progress timestamp. */
 #define STALL_CHECK_PERIOD_S 60
 /* Bounded retries for the one-shot network interface bring-up at startup. */
@@ -92,14 +102,36 @@ static atomic_t disconnected_since_s;
 /* Set once the device has connected at least once this boot; gates the
  * disconnection watchdog so an environment with no Wi-Fi never reboot-loops. */
 static atomic_t ever_connected = ATOMIC_INIT(0);
+/* Uptime (seconds) of the last CONFIRMED successful Memfault round-trip (data
+ * POST or FOTA query); 0 until the first one. Read by the upload-success
+ * watchdog. */
+static atomic_t last_upload_ok_s;
+/* Set once at least one upload has succeeded this boot; gates the upload-success
+ * watchdog so a unit that never reaches the cloud parks instead of reboot-looping. */
+static atomic_t ever_uploaded = ATOMIC_INIT(0);
 
 static void note_progress(void)
 {
 	atomic_set(&last_progress_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
 }
 
+/* Stamp a confirmed successful Memfault round-trip. This is the ground truth the
+ * upload-success watchdog checks against. Order matters: set the timestamp before
+ * the armed flag so the ISR never sees ever_uploaded==1 against a stale (0) time. */
+static void note_upload_ok(void)
+{
+	atomic_set(&last_upload_ok_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
+	atomic_set(&ever_uploaded, 1);
+}
+
 /* Runs in timer (ISR) context, so it fires even if the cloud thread is wedged.
- * Guards two independent failure modes:
+ * Guards three failure modes, most-general first:
+ *
+ *  0. No upload landing: nothing has actually reached Memfault for
+ *     UPLOAD_WATCHDOG_S despite an upload having succeeded earlier this boot.
+ *     The mechanism-agnostic backstop -- trusts neither `connected` nor the
+ *     cloud thread's self-progress, only confirmed uploads -- so it catches a
+ *     wedge in the seam the other two miss (the Toilet #2 soft-hang). Coredump.
  *
  *  1. Connected but stuck: the cloud thread has made no progress for
  *     CLOUD_STALL_REBOOT_S while the link is up - almost certainly parked in an
@@ -120,6 +152,18 @@ static void stall_monitor_expiry(struct k_timer *timer)
 	ARG_UNUSED(timer);
 
 	const uint32_t now_s = k_uptime_get_32() / MSEC_PER_SEC;
+
+	/* (0) Mechanism-agnostic: uploaded before, but nothing has reached Memfault
+	 * for UPLOAD_WATCHDOG_S. Gated on ever_uploaded so a unit that never reaches
+	 * the cloud parks instead of reboot-looping. Coredump reveals the wedge.
+	 */
+	if (atomic_get(&ever_uploaded) == 1) {
+		const uint32_t up_s = (uint32_t)atomic_get(&last_upload_ok_s);
+
+		if ((now_s - up_s) >= UPLOAD_WATCHDOG_S) {
+			MEMFAULT_SOFTWARE_WATCHDOG();
+		}
+	}
 
 	if (atomic_get(&connected) == 1) {
 		const uint32_t last_s = (uint32_t)atomic_get(&last_progress_s);
@@ -218,6 +262,8 @@ static void upload_memfault_data(void)
 
 	if (err) {
 		LOG_WRN("Memfault data post failed (err %d)", err);
+	} else {
+		note_upload_ok();
 	}
 }
 
@@ -232,6 +278,10 @@ static void check_fota(void)
 
 	if (err < 0) {
 		LOG_WRN("Memfault FOTA check failed (err %d)", err);
+	} else {
+		/* Reaching Memfault's OTA endpoint (update or not) proves the cloud
+		 * path works -- a denser liveness signal than the 10-min heartbeat. */
+		note_upload_ok();
 	}
 }
 
