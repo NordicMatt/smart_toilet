@@ -53,6 +53,9 @@ target_sources(app PRIVATE ${WW_MODEL_DIR}/nrf_edgeai_generated/nrf_edgeai_user_
 target_include_directories(app PRIVATE ${WW_MODEL_DIR})
 
 target_sources_ifdef(CONFIG_MEMFAULT app PRIVATE src/audio_telemetry.c)
+# Liveness watchdog for the wake-word audio loop: captures a Memfault coredump
+# and reboots if the loop wedges. Needs the Memfault assert/coredump path.
+target_sources_ifdef(CONFIG_MEMFAULT app PRIVATE src/audio_watchdog.c)
 # Application Memfault heartbeat metric definitions
 # (memfault_metrics_heartbeat_config.def lives in config/).
 zephyr_include_directories_ifdef(CONFIG_MEMFAULT config)

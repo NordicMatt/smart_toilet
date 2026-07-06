@@ -6,9 +6,10 @@ from Memfault over HTTPS, written to the MCUboot **secondary slot in external
 MX25R64 flash**, swapped into the internal primary slot by MCUboot on reboot, and
 **confirmed** so it survives a power-cycle.
 
-This requires the spike branch `spike/mcuboot-ext-flash-fota` (MCUboot + the
-external-flash secondary + Memfault FOTA). The stock `main` build has no
-bootloader and cannot do FOTA.
+Since the `spike/mcuboot-ext-flash-fota` merge into `main` (commit 9789cda),
+`main` carries MCUboot + the external-flash secondary + Memfault FOTA, so this
+works on a stock `main` build. (Earlier `main` had no bootloader and could not
+do FOTA — that is the branch note this doc originally referred to.)
 
 ## Delivery path: Memfault Release Management (pure HTTPS)
 

@@ -32,6 +32,7 @@
 
 #include <memfault/core/data_packetizer.h>
 #include <memfault/core/reboot_tracking.h>
+#include <memfault/panics/assert.h>
 #include <memfault/metrics/connectivity.h>
 #include <memfault/metrics/metrics.h>
 #include <memfault/ports/zephyr/http.h>
@@ -87,8 +88,10 @@ static void note_progress(void)
 /* Runs in timer (ISR) context. If the network is up but the cloud thread has
  * been stuck for CLOUD_STALL_REBOOT_S, it is almost certainly parked in an
  * unbounded socket call; there is no way to safely kill a thread blocked in a
- * syscall, so reboot. The voice path works offline and recovers in ~16 s, and
- * the SoftwareWatchdog reboot reason makes the stall visible in Memfault.
+ * syscall, so capture a coredump and reboot. The voice path works offline and
+ * recovers in ~16 s. The coredump (with the cloud thread's backtrace = where it
+ * parked, e.g. the TLS connect) uploads on the next connection, and the
+ * SoftwareWatchdog reboot reason makes the stall visible in Memfault.
  */
 static void stall_monitor_expiry(struct k_timer *timer)
 {
@@ -105,8 +108,11 @@ static void stall_monitor_expiry(struct k_timer *timer)
 		return;
 	}
 
-	MEMFAULT_REBOOT_MARK_RESET_IMMINENT(kMfltRebootReason_SoftwareWatchdog);
-	sys_reboot(SYS_REBOOT_WARM);
+	/* Captures a coredump (reason SoftwareWatchdog), then resets via
+	 * RESET_ON_FATAL_ERROR - upgrades the previous reason-only reboot so the
+	 * stalled backtrace is recoverable.
+	 */
+	MEMFAULT_SOFTWARE_WATCHDOG();
 }
 
 static K_TIMER_DEFINE(cloud_stall_timer, stall_monitor_expiry, NULL);

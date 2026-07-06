@@ -19,6 +19,7 @@
 #include "audio_snap.h"
 #include "audio_stats.h"
 #include "audio_telemetry.h"
+#include "audio_watchdog.h"
 #include "cloud.h"
 #include "control_output.h"
 #include "dmic.h"
@@ -50,6 +51,9 @@ static int ww_loop(void)
 	print_control_output((struct control_message){CONTROL_MESSAGE_WAITING_WW});
 
 	while (true) {
+		/* Pet the liveness watchdog: reaching here proves the loop iterates. */
+		audio_watchdog_feed();
+
 		err = dmic_read(dmic_dev, 0, &audio_buffer, &audio_buffer_size, DMIC_READ_TIMEOUT);
 		if (err < 0) {
 			/* A DMIC read error is transient (e.g. -EAGAIN: no block within
@@ -110,6 +114,9 @@ static int kws_loop(void)
 	print_control_output((struct control_message){.type = CONTROL_MESSAGE_WAITING_KW});
 
 	while (IS_ENABLED(CONFIG_APP_MODE_KWS_ONLY) || spotting_timeout > k_uptime_get_32()) {
+		/* Pet the liveness watchdog: reaching here proves the loop iterates. */
+		audio_watchdog_feed();
+
 		err = dmic_read(dmic_dev, 0, &audio_buffer, &audio_buffer_size, DMIC_READ_TIMEOUT);
 		if (err < 0) {
 			/* Transient (e.g. -EAGAIN). Skip the block and keep going rather
@@ -235,6 +242,12 @@ int main(void)
 	 */
 	leds_on_led1();
 	LOG_INF("Audio sampling started (LED1 on)");
+
+	/* Arm the audio-loop liveness watchdog now that capture is running. Boot and
+	 * the network wait above are deliberately excluded so they cannot trip it; a
+	 * wedge from here on (a silently deaf toilet) captures a coredump + reboots.
+	 */
+	audio_watchdog_start();
 
 	while (true) {
 		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS) ||
