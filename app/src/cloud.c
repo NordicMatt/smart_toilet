@@ -56,6 +56,13 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
  * operation (a full FOTA image download, ~3.5 min measured).
  */
 #define CLOUD_STALL_REBOOT_S (15 * 60)
+/* Reboot to recover if Wi-Fi stays down this long AFTER having been connected.
+ * conn_mgr and the nRF70 backend retry association on their own, but a wedged
+ * supplicant/driver (a marginal-signal drop that never re-associates - e.g. a
+ * unit in a weak-signal spot) only clears on a reset. Armed only after the first
+ * successful connect, so a unit simply out of range never reboot-loops: worst
+ * case one reboot per outage, then it parks and the offline voice path runs. */
+#define DISCONNECT_REBOOT_S  (10 * 60)
 /* How often the stall monitor samples the progress timestamp. */
 #define STALL_CHECK_PERIOD_S 60
 /* Bounded retries for the one-shot network interface bring-up at startup. */
@@ -79,40 +86,68 @@ static uint32_t flush_count;
  * iteration. Read by the stall monitor timer.
  */
 static atomic_t last_progress_s;
+/* Uptime (seconds) when L4 connectivity was lost; 0 whenever connected. Read by
+ * the monitor timer to time the disconnection watchdog. */
+static atomic_t disconnected_since_s;
+/* Set once the device has connected at least once this boot; gates the
+ * disconnection watchdog so an environment with no Wi-Fi never reboot-loops. */
+static atomic_t ever_connected = ATOMIC_INIT(0);
 
 static void note_progress(void)
 {
 	atomic_set(&last_progress_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
 }
 
-/* Runs in timer (ISR) context. If the network is up but the cloud thread has
- * been stuck for CLOUD_STALL_REBOOT_S, it is almost certainly parked in an
- * unbounded socket call; there is no way to safely kill a thread blocked in a
- * syscall, so capture a coredump and reboot. The voice path works offline and
- * recovers in ~16 s. The coredump (with the cloud thread's backtrace = where it
- * parked, e.g. the TLS connect) uploads on the next connection, and the
- * SoftwareWatchdog reboot reason makes the stall visible in Memfault.
+/* Runs in timer (ISR) context, so it fires even if the cloud thread is wedged.
+ * Guards two independent failure modes:
+ *
+ *  1. Connected but stuck: the cloud thread has made no progress for
+ *     CLOUD_STALL_REBOOT_S while the link is up - almost certainly parked in an
+ *     unbounded socket call (the Memfault TLS connect has no timeout). There is
+ *     no safe way to kill a thread blocked in a syscall, so capture a coredump
+ *     (its backtrace = where it parked) and reset via RESET_ON_FATAL_ERROR.
+ *
+ *  2. Disconnected too long: Wi-Fi has been down for DISCONNECT_REBOOT_S after
+ *     having been up. conn_mgr / the nRF70 backend retry association themselves,
+ *     but a wedged supplicant/driver only clears on a reset, so warm-reboot to
+ *     force a clean bring-up. Reason-only (a lost link is not a crashed thread).
+ *
+ * Either way the voice/flush path keeps working offline and recovers ~16 s after
+ * the reboot.
  */
 static void stall_monitor_expiry(struct k_timer *timer)
 {
 	ARG_UNUSED(timer);
 
-	if (atomic_get(&connected) != 1) {
-		return;
-	}
-
 	const uint32_t now_s = k_uptime_get_32() / MSEC_PER_SEC;
-	const uint32_t last_s = (uint32_t)atomic_get(&last_progress_s);
 
-	if ((now_s - last_s) < CLOUD_STALL_REBOOT_S) {
+	if (atomic_get(&connected) == 1) {
+		const uint32_t last_s = (uint32_t)atomic_get(&last_progress_s);
+
+		if ((now_s - last_s) >= CLOUD_STALL_REBOOT_S) {
+			MEMFAULT_SOFTWARE_WATCHDOG();
+		}
 		return;
 	}
 
-	/* Captures a coredump (reason SoftwareWatchdog), then resets via
-	 * RESET_ON_FATAL_ERROR - upgrades the previous reason-only reboot so the
-	 * stalled backtrace is recoverable.
+	/* Only reboot to recover a link we HAD and lost; a unit that never
+	 * connected this boot is likely just out of range, and rebooting it would
+	 * loop forever and starve the offline voice/flush path.
 	 */
-	MEMFAULT_SOFTWARE_WATCHDOG();
+	if (atomic_get(&ever_connected) != 1) {
+		return;
+	}
+
+	const uint32_t since_s = (uint32_t)atomic_get(&disconnected_since_s);
+
+	if (since_s != 0 && (now_s - since_s) >= DISCONNECT_REBOOT_S) {
+		/* Shares the SoftwareWatchdog reason with the cloud stall above; the
+		 * two are distinguishable in Memfault by the connectivity state at
+		 * reboot (ConnectionLost here vs. Connected for a cloud-thread stall).
+		 */
+		MEMFAULT_REBOOT_MARK_RESET_IMMINENT(kMfltRebootReason_SoftwareWatchdog);
+		sys_reboot(SYS_REBOOT_WARM);
+	}
 }
 
 static K_TIMER_DEFINE(cloud_stall_timer, stall_monitor_expiry, NULL);
@@ -211,6 +246,9 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 		LOG_INF("Network connectivity gained");
 		/* Fresh progress baseline before the stall monitor arms. */
 		note_progress();
+		/* Arm the disconnection watchdog and clear any pending down-timer. */
+		atomic_set(&ever_connected, 1);
+		atomic_set(&disconnected_since_s, 0);
 		atomic_set(&connected, 1);
 		memfault_metrics_connectivity_connected_state_change(
 			kMemfaultMetricsConnectivityState_Connected);
@@ -218,6 +256,11 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 		break;
 	case NET_EVENT_L4_DISCONNECTED:
 		LOG_INF("Network connectivity lost");
+		/* Stamp the down-time before clearing `connected` so the monitor has a
+		 * valid start point (the != 0 guard covers the transient in between).
+		 */
+		atomic_set(&disconnected_since_s,
+			   (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
 		atomic_set(&connected, 0);
 		memfault_metrics_connectivity_connected_state_change(
 			kMemfaultMetricsConnectivityState_ConnectionLost);
