@@ -73,6 +73,16 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
  * (a genuine disconnect reboots via that first) and well above two heartbeat
  * intervals + a FOTA download, so a slow cycle never trips it. */
 #define UPLOAD_WATCHDOG_S    (20 * 60)
+/* If uploads stall while still nominally "connected" for this long, the link has
+ * likely gone half-open -- a silent drop/steer the nRF70 never noticed (legacy
+ * power save + Nest mesh: wifi_disconnect_count stays 0 while the link is actually
+ * dead). Force a fresh Wi-Fi association -- fast + light -- BEFORE the reboot
+ * watchdogs escalate. Above the ~2 min upload/FOTA-check cadence so a single slow
+ * cycle never trips it, and well below UPLOAD_WATCHDOG_S so reconnect gets several
+ * tries first. */
+#define RECONNECT_AFTER_S        (3 * 60)
+/* Do not re-kick a reconnect more often than this while uploads stay stalled. */
+#define RECONNECT_MIN_INTERVAL_S (3 * 60)
 /* How often the stall monitor samples the progress timestamp. */
 #define STALL_CHECK_PERIOD_S 60
 /* Bounded retries for the one-shot network interface bring-up at startup. */
@@ -109,6 +119,9 @@ static atomic_t last_upload_ok_s;
 /* Set once at least one upload has succeeded this boot; gates the upload-success
  * watchdog so a unit that never reaches the cloud parks instead of reboot-looping. */
 static atomic_t ever_uploaded = ATOMIC_INIT(0);
+/* Uptime (seconds) of the last forced Wi-Fi reconnect; rate-limits the
+ * reconnect-not-reboot tier to at most once per RECONNECT_MIN_INTERVAL_S. */
+static atomic_t last_reconnect_s;
 
 static void note_progress(void)
 {
@@ -124,28 +137,40 @@ static void note_upload_ok(void)
 	atomic_set(&ever_uploaded, 1);
 }
 
+/* Runs in workqueue (thread) context -- conn_mgr calls are NOT ISR-safe, so the
+ * stall monitor submits this rather than calling directly. Tears down the stale
+ * association and re-associates, which clears a half-open link (the silent
+ * drop/steer) without a full reboot. If re-association fails, L4 stays down and
+ * the disconnection watchdog reboots as the fallback. */
+static void wifi_reconnect_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	LOG_WRN("Uploads stalled while nominally connected; forcing Wi-Fi reconnect");
+	(void)conn_mgr_all_if_disconnect(true);
+	(void)conn_mgr_all_if_connect(true);
+}
+static K_WORK_DEFINE(wifi_reconnect_work, wifi_reconnect_work_fn);
+
 /* Runs in timer (ISR) context, so it fires even if the cloud thread is wedged.
- * Guards three failure modes, most-general first:
+ * Escalating recovery, lightest first:
  *
- *  0. No upload landing: nothing has actually reached Memfault for
- *     UPLOAD_WATCHDOG_S despite an upload having succeeded earlier this boot.
- *     The mechanism-agnostic backstop -- trusts neither `connected` nor the
- *     cloud thread's self-progress, only confirmed uploads -- so it catches a
- *     wedge in the seam the other two miss (the Toilet #2 soft-hang). Coredump.
+ *  0. Uploads stalled but still "connected": try a Wi-Fi RECONNECT (no reboot).
+ *     The common failure is a half-open link -- legacy power save + the Nest mesh
+ *     silently drop/steer the dozing client, so `connected` stays 1 and
+ *     wifi_disconnect_count never moves, yet nothing gets through. Re-associating
+ *     clears it in seconds. conn_mgr is not ISR-safe, so this only submits the
+ *     reconnect work; the reboot tiers below remain the fallback.
  *
- *  1. Connected but stuck: the cloud thread has made no progress for
- *     CLOUD_STALL_REBOOT_S while the link is up - almost certainly parked in an
- *     unbounded socket call (the Memfault TLS connect has no timeout). There is
- *     no safe way to kill a thread blocked in a syscall, so capture a coredump
- *     (its backtrace = where it parked) and reset via RESET_ON_FATAL_ERROR.
+ *  1. No upload landed for UPLOAD_WATCHDOG_S despite the reconnect attempts:
+ *     capture a coredump (trusts only confirmed uploads) and reset.
  *
- *  2. Disconnected too long: Wi-Fi has been down for DISCONNECT_REBOOT_S after
- *     having been up. conn_mgr / the nRF70 backend retry association themselves,
- *     but a wedged supplicant/driver only clears on a reset, so warm-reboot to
- *     force a clean bring-up. Reason-only (a lost link is not a crashed thread).
+ *  2. Connected but the cloud thread made no progress for CLOUD_STALL_REBOOT_S:
+ *     parked in an unbounded socket call; coredump + reset.
  *
- * Either way the voice/flush path keeps working offline and recovers ~16 s after
- * the reboot.
+ *  3. Disconnected for DISCONNECT_REBOOT_S after having been up (reconnect never
+ *     re-associated): warm-reboot to force a clean bring-up.
+ *
+ * The voice/flush path keeps working throughout and recovers ~16 s after any reboot.
  */
 static void stall_monitor_expiry(struct k_timer *timer)
 {
@@ -153,9 +178,24 @@ static void stall_monitor_expiry(struct k_timer *timer)
 
 	const uint32_t now_s = k_uptime_get_32() / MSEC_PER_SEC;
 
-	/* (0) Mechanism-agnostic: uploaded before, but nothing has reached Memfault
-	 * for UPLOAD_WATCHDOG_S. Gated on ever_uploaded so a unit that never reaches
-	 * the cloud parks instead of reboot-looping. Coredump reveals the wedge.
+	/* (0) Reconnect-not-reboot: uploads stalled while still nominally connected
+	 * -> the link likely went half-open. Kick a fresh association (in thread
+	 * context), rate-limited, before the reboot tiers escalate.
+	 */
+	if (atomic_get(&ever_uploaded) == 1 && atomic_get(&connected) == 1) {
+		const uint32_t up_s = (uint32_t)atomic_get(&last_upload_ok_s);
+		const uint32_t rc_s = (uint32_t)atomic_get(&last_reconnect_s);
+
+		if ((now_s - up_s) >= RECONNECT_AFTER_S &&
+		    (rc_s == 0 || (now_s - rc_s) >= RECONNECT_MIN_INTERVAL_S)) {
+			atomic_set(&last_reconnect_s, now_s);
+			k_work_submit(&wifi_reconnect_work);
+		}
+	}
+
+	/* (1) Nothing reached Memfault for UPLOAD_WATCHDOG_S despite the reconnect
+	 * attempts above. Gated on ever_uploaded so a unit that never reaches the
+	 * cloud parks instead of reboot-looping. Coredump reveals the wedge.
 	 */
 	if (atomic_get(&ever_uploaded) == 1) {
 		const uint32_t up_s = (uint32_t)atomic_get(&last_upload_ok_s);
