@@ -46,8 +46,10 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 #define DATE_TIME_TIMEOUT_S 30
 /* How often, while connected, to drain pending Memfault data to the cloud. */
 #define UPLOAD_TICK_S	    15
-/* How often, while connected, to ask Memfault whether a FOTA update is ready. */
-#define FOTA_CHECK_S	    120
+/* How often, while connected, to ask Memfault whether a FOTA update is ready.
+ * Doubles as the dense connectivity proof (stamps note_upload_ok on success), so
+ * it also sets how fast a silent half-open link is noticed and reconnected. */
+#define FOTA_CHECK_S	    60
 /* Reboot if the cloud thread makes no progress for this long while the network
  * is up. The Memfault HTTP client's TLS connect() has no socket timeout, so a
  * network hiccup mid-handshake can park this thread forever — silently killing
@@ -77,14 +79,15 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
  * likely gone half-open -- a silent drop/steer the nRF70 never noticed (legacy
  * power save + Nest mesh: wifi_disconnect_count stays 0 while the link is actually
  * dead). Force a fresh Wi-Fi association -- fast + light -- BEFORE the reboot
- * watchdogs escalate. Above the ~2 min upload/FOTA-check cadence so a single slow
- * cycle never trips it, and well below UPLOAD_WATCHDOG_S so reconnect gets several
- * tries first. */
-#define RECONNECT_AFTER_S        (3 * 60)
+ * watchdogs escalate. Above the ~60 s FOTA-check cadence (2 missed proofs) so a
+ * single slow cycle never trips it, and well below UPLOAD_WATCHDOG_S so reconnect
+ * gets several tries first. */
+#define RECONNECT_AFTER_S        (2 * 60)
 /* Do not re-kick a reconnect more often than this while uploads stay stalled. */
-#define RECONNECT_MIN_INTERVAL_S (3 * 60)
-/* How often the stall monitor samples the progress timestamp. */
-#define STALL_CHECK_PERIOD_S 60
+#define RECONNECT_MIN_INTERVAL_S (2 * 60)
+/* How often the stall monitor samples the progress timestamp (finer = reconnect
+ * and reboot tiers fire closer to their thresholds). */
+#define STALL_CHECK_PERIOD_S 30
 /* Bounded retries for the one-shot network interface bring-up at startup. */
 #define NET_BRINGUP_MAX_ATTEMPTS 5
 #define NET_BRINGUP_RETRY_DELAY	 K_SECONDS(5)
