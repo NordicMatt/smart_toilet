@@ -79,3 +79,12 @@ dmic_dev: &pdm20 {
 &mx25r64 {
 	status = "okay";
 };
+
+/* Hardware watchdog (v1.8.13): the nRF54 WDT (aliased watchdog0), disabled by
+ * default in the SoC dtsi. task_wdt sits on top of it as the last-resort reset
+ * that fires even in a total lockup where the kernel clock (and thus every
+ * software k_timer watchdog) is dead. Fed from the audio loop; see audio_watchdog.c.
+ */
+&wdt31 {
+	status = "okay";
+};

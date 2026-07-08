@@ -10,6 +10,11 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
+#ifdef CONFIG_TASK_WDT
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/task_wdt/task_wdt.h>
+#endif
 
 #include <memfault/panics/assert.h>
 
@@ -24,6 +29,16 @@
 #define AUDIO_STALL_REBOOT_S 60
 /* How often the monitor samples the progress timestamp. */
 #define STALL_CHECK_PERIOD_S 15
+#ifdef CONFIG_TASK_WDT
+/* Hardware-backed backstop: if the audio loop stops feeding for this long, the
+ * task watchdog -- and, if even the kernel clock is dead, the nRF54 hardware WDT
+ * it sits on -- forces a reset. Longer than AUDIO_STALL_REBOOT_S so the software
+ * monitor fires first (with a coredump) for an ordinary thread stall; this layer
+ * exists for what software CANNOT catch: a total lockup where the sysclock/ISRs
+ * are dead so no k_timer runs at all. */
+#define HW_WDT_TIMEOUT_MS 120000
+static int task_wdt_ch = -1;
+#endif
 
 /* Uptime (seconds) of the audio loop's last sign of life, fed every iteration.
  * Read by the monitor timer (ISR context). */
@@ -35,6 +50,11 @@ static atomic_t armed = ATOMIC_INIT(0);
 void audio_watchdog_feed(void)
 {
 	atomic_set(&last_progress_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
+#ifdef CONFIG_TASK_WDT
+	if (task_wdt_ch >= 0) {
+		(void)task_wdt_feed(task_wdt_ch);
+	}
+#endif
 }
 
 /* Runs in timer (ISR) context, so it fires even if every thread is wedged. If
@@ -66,8 +86,32 @@ static void audio_stall_expiry(struct k_timer *timer)
 
 static K_TIMER_DEFINE(audio_stall_timer, audio_stall_expiry, NULL);
 
+#ifdef CONFIG_TASK_WDT
+/* task_wdt timeout callback (ISR context). Reached only if the audio loop stalled
+ * past HW_WDT_TIMEOUT_MS while the kernel is still alive enough to run task_wdt
+ * (the software monitor above should have fired first). Capture a coredump, then
+ * reset. A true total lockup skips this -- the hardware WDT resets with no callback. */
+static void task_wdt_cb(int channel_id, void *user_data)
+{
+	ARG_UNUSED(channel_id);
+	ARG_UNUSED(user_data);
+	MEMFAULT_TASK_WATCHDOG();
+}
+#endif
+
 void audio_watchdog_start(void)
 {
+#ifdef CONFIG_TASK_WDT
+	/* Arm the hardware-backed task watchdog. The nRF54 wdt31 (aliased
+	 * watchdog0) is the fallback: even a total CPU lockup that stops every
+	 * k_timer still gets a hardware reset. Best-effort -- if the WDT is not
+	 * ready the software monitor below still runs. */
+	const struct device *hw_wdt = DEVICE_DT_GET(DT_ALIAS(watchdog0));
+
+	if (device_is_ready(hw_wdt) && task_wdt_init(hw_wdt) == 0) {
+		task_wdt_ch = task_wdt_add(HW_WDT_TIMEOUT_MS, task_wdt_cb, NULL);
+	}
+#endif
 	audio_watchdog_feed();
 	atomic_set(&armed, 1);
 	k_timer_start(&audio_stall_timer, K_SECONDS(STALL_CHECK_PERIOD_S),
