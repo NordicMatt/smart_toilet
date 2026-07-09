@@ -26,6 +26,14 @@ MEMFAULT_METRICS_KEY_DEFINE(ww_prob_max_pct, kMemfaultMetricType_Unsigned)
 /* Confirmed wake-word detections during the interval. */
 MEMFAULT_METRICS_KEY_DEFINE(ww_detections, kMemfaultMetricType_Unsigned)
 
+/* Wake-word confidence summary, so the observability distribution is visible in
+ * the heartbeat dashboard (not only in the edgeai_observability CDR):
+ *   ww_prob_mean_pct - mean P(wakeword) over the interval, percent (0-100)
+ *   ww_inferences    - number of model inferences run in the interval
+ * Read alongside ww_prob_max_pct (peak) and ww_detections (fires). */
+MEMFAULT_METRICS_KEY_DEFINE(ww_prob_mean_pct, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(ww_inferences, kMemfaultMetricType_Unsigned)
+
 /* Flushes during the heartbeat interval (a per-interval event counter, like
  * ww_detections). Incremented once per completed flush and reset by Memfault
  * each heartbeat, so the timeseries reads flushes-per-interval; sum it over a
