@@ -26,9 +26,11 @@ MEMFAULT_METRICS_KEY_DEFINE(ww_prob_max_pct, kMemfaultMetricType_Unsigned)
 /* Confirmed wake-word detections during the interval. */
 MEMFAULT_METRICS_KEY_DEFINE(ww_detections, kMemfaultMetricType_Unsigned)
 
-/* Lifetime toilet flush count (persisted in NVS). Reported as a metric now that
- * the device talks only to Memfault — there is no nRF Cloud shadow/message
- * channel. Set each cloud-thread tick so every heartbeat carries the latest. */
+/* Flushes during the heartbeat interval (a per-interval event counter, like
+ * ww_detections). Incremented once per completed flush and reset by Memfault
+ * each heartbeat, so the timeseries reads flushes-per-interval; sum it over a
+ * day for flushes/day. NOT the lifetime total — the device keeps that in NVS
+ * for its own record but no longer reports it. */
 MEMFAULT_METRICS_KEY_DEFINE(flush_count, kMemfaultMetricType_Unsigned)
 
 /* Motor runs that hit the safety timeout without ever seeing the magnet leave

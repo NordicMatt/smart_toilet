@@ -262,23 +262,23 @@ static int toilet_settings_set(const char *name, size_t len, settings_read_cb re
 
 SETTINGS_STATIC_HANDLER_DEFINE(toilet, "toilet", NULL, toilet_settings_set, NULL, NULL);
 
-/* Publish the lifetime flush count as a Memfault metric so it appears in the
- * device timeline. Called every tick so each heartbeat carries the latest
- * value even in intervals with no flush.
- */
-static void publish_flush_count(void)
-{
-	memfault_metrics_heartbeat_set_unsigned(MEMFAULT_METRICS_KEY(flush_count), flush_count);
-}
-
-/* Record any pending flush events: bump the lifetime count, persist it to NVS,
- * and refresh the Memfault metric. Runs only on the cloud thread.
+/* Record any pending flush events: bump the persisted lifetime count and report
+ * each flush as a per-interval Memfault event counter. Runs only on the cloud
+ * thread.
+ *
+ * The metric is incremented with heartbeat_add (not set to the lifetime total),
+ * so Memfault resets it each heartbeat and the timeseries reads "flushes in this
+ * interval" — sum it over a day for flushes/day. The lifetime total is still
+ * kept in NVS for the device's own record and the "Flush #N" log, but is no
+ * longer what the cloud metric carries.
  */
 static void record_flushes(void)
 {
 	while (atomic_get(&flush_pending) > 0) {
 		atomic_dec(&flush_pending);
 		flush_count++;
+
+		memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(flush_count), 1);
 
 		int err = settings_save_one(FLUSH_COUNT_KEY, &flush_count, sizeof(flush_count));
 
@@ -288,8 +288,6 @@ static void record_flushes(void)
 		}
 		LOG_INF("Flush #%u recorded", flush_count);
 	}
-
-	publish_flush_count();
 }
 
 /* Drain pending Memfault data (reboot events, metrics, coredumps) to Memfault
@@ -471,9 +469,8 @@ static void cloud_thread_fn(void)
 		}
 
 		/* Push any data captured before/at this connection (e.g. the
-		 * reboot reason event) promptly, and seed the flush metric.
+		 * reboot reason event) promptly.
 		 */
-		publish_flush_count();
 		upload_memfault_data();
 
 		int64_t next_fota_check = 0; /* check shortly after coming up */
@@ -483,7 +480,6 @@ static void cloud_thread_fn(void)
 			if (k_sem_take(&flush_event_sem, K_SECONDS(UPLOAD_TICK_S)) == 0) {
 				record_flushes();
 			} else {
-				publish_flush_count();
 				upload_memfault_data();
 				if (k_uptime_get() >= next_fota_check) {
 					check_fota();
