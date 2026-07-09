@@ -10,6 +10,12 @@
 #include <zephyr/logging/log.h>
 #include <nrf_edgeai/nrf_edgeai.h>
 #include <nrf_edgeai/rt/nrf_edgeai_runtime_aux.h>
+#if defined(CONFIG_NRF_EDGEAI_OBSV)
+#include <nrf_edgeai_obsv/nrf_edgeai_obsv.h>
+#if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
+#include <nrf_edgeai_obsv/nrf_edgeai_obsv_memfault.h>
+#endif
+#endif
 
 #include "../audio_telemetry.h"
 #include "../dmic.h"
@@ -19,6 +25,76 @@
 LOG_MODULE_REGISTER(ww);
 
 static nrf_edgeai_t *ww_model;
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV)
+/* The abracadabra/okay_nordic wake-word models are single-output (one
+ * probability = P(wakeword)); see MODEL_OUTPUTS_NUM in the generated model. The
+ * observability storage is sized for this at compile time and cross-checked
+ * against the model's runtime num_classes in ww_obsv_init().
+ */
+#define WW_OBSV_NUM_CLASSES 1
+
+/* On-wire model identity carried in every snapshot, so the cloud can tell which
+ * model produced a given probability distribution (A/B across models). This is
+ * a compact app-defined id (the obsv model_id field is uint16_t, so the 5-6
+ * digit Edge AI Lab solution numbers do not fit): 1 = "abracadabra" (solution
+ * 93800), 2 = "Okay Nordic" (solution 36455). Keep these stable. */
+#if defined(CONFIG_APP_WW_MODEL_OKAY_NORDIC)
+#define WW_OBSV_MODEL_ID 2U
+#else
+#define WW_OBSV_MODEL_ID 1U
+#endif
+
+static nrf_edgeai_obsv_ctx_t ww_obsv_ctx;
+static nrf_edgeai_obsv_metric_t ww_obsv_pd_metric;
+/* uint32_t array gives the natural alignment the storage macro requires. */
+static uint32_t ww_obsv_pd_buf[(NRF_EDGEAI_OBSV_PD_STORAGE_BYTES(WW_OBSV_NUM_CLASSES)
+				+ sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+
+/* Set up the probability-distribution metric and bind the Memfault CDR
+ * transport. Called from ww_init() once the model is initialized (num_classes
+ * is only valid after nrf_edgeai_init()). Failures are non-fatal: observability
+ * is diagnostics, so a problem here must never stop the toilet flushing.
+ */
+static void ww_obsv_init(void)
+{
+	const uint16_t num_classes = ww_model->decoded_output.classif.num_classes;
+
+	__ASSERT_NO_MSG(num_classes == WW_OBSV_NUM_CLASSES);
+
+	const nrf_edgeai_obsv_model_info_t model = {
+		.model_id = WW_OBSV_MODEL_ID,
+		.num_classes = num_classes,
+		.version = 1,
+	};
+
+	int err = nrf_edgeai_obsv_init(&ww_obsv_ctx, &model);
+
+	if (err) {
+		LOG_WRN("obsv init failed (err %d); ML metrics disabled", err);
+		return;
+	}
+
+	nrf_edgeai_obsv_metric_pd_create(&ww_obsv_pd_metric, ww_obsv_pd_buf, num_classes);
+
+	err = nrf_edgeai_obsv_register(&ww_obsv_ctx, &ww_obsv_pd_metric, NULL);
+	if (err) {
+		LOG_WRN("obsv metric register failed (err %d)", err);
+		return;
+	}
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
+	err = nrf_edgeai_obsv_memfault_init(&ww_obsv_ctx);
+	if (err) {
+		LOG_WRN("obsv Memfault CDR bind failed (err %d)", err);
+		return;
+	}
+#endif
+
+	LOG_INF("obsv: probability-distribution metric -> Memfault CDR (model %u)",
+		WW_OBSV_MODEL_ID);
+}
+#endif /* CONFIG_NRF_EDGEAI_OBSV */
 
 int ww_init(void)
 {
@@ -38,6 +114,10 @@ int ww_init(void)
 		LOG_ERR("Model initialization failed (err %d)", err);
 		return -ENOENT;
 	}
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV)
+	ww_obsv_init();
+#endif
 
 	return 0;
 }
@@ -66,6 +146,14 @@ static bool ww_postprocess(void)
 
 	/* Remote diagnosis: track the peak probability per Memfault heartbeat. */
 	audio_telemetry_prob(class_probability);
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV)
+	/* Feed the full class-probability vector to the observability metrics.
+	 * Thread-safe (takes ctx->lock), so it cannot race the auto-collect
+	 * encode running on the system workqueue. Bins the wake-word confidence
+	 * into the per-class histogram shipped to Memfault as a CDR. */
+	nrf_edgeai_obsv_update(&ww_obsv_ctx, ww_model->decoded_output.classif.probabilities.p_f32);
+#endif
 
 	const bool oldest_entry = (bool)(ww_history & BIT(CONFIG_WW_HISTORY_SIZE - 1));
 
