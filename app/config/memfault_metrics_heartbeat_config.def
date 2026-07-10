@@ -45,3 +45,10 @@ MEMFAULT_METRICS_KEY_DEFINE(flush_count, kMemfaultMetricType_Unsigned)
  * home (possible jam/stuck sensor). Not persisted - a spike in this per
  * interval is the signal, not the lifetime total. */
 MEMFAULT_METRICS_KEY_DEFINE(flush_jam_count, kMemfaultMetricType_Unsigned)
+
+/* Failsafe-button presses during the interval (debounced edges from the P1.08
+ * switch ISR). Differentiates how flushes are triggered: button vs. voice ~=
+ * flush_count - button_press_count (approximately - a press during an
+ * in-progress flush counts here but produces no extra flush). Per-interval
+ * event counter like flush_count. */
+MEMFAULT_METRICS_KEY_DEFINE(button_press_count, kMemfaultMetricType_Unsigned)

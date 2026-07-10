@@ -250,6 +250,17 @@ void cloud_report_flush(void)
 	k_sem_give(&flush_event_sem);
 }
 
+/* Debounced failsafe-button presses not yet reported to Memfault. Staged from
+ * the button GPIO ISR (atomic_inc + k_sem_give are ISR-safe); drained on the
+ * cloud thread, which owns all Memfault metric calls. */
+static atomic_t button_press_pending = ATOMIC_INIT(0);
+
+void cloud_report_button_press(void)
+{
+	atomic_inc(&button_press_pending);
+	k_sem_give(&flush_event_sem);
+}
+
 static int toilet_settings_set(const char *name, size_t len, settings_read_cb read_cb,
 			       void *cb_arg)
 {
@@ -274,6 +285,13 @@ SETTINGS_STATIC_HANDLER_DEFINE(toilet, "toilet", NULL, toilet_settings_set, NULL
  */
 static void record_flushes(void)
 {
+	/* Report failsafe-button presses staged by the GPIO ISR. Differentiates
+	 * the flush trigger: voice flushes ~= flush_count - button_press_count. */
+	while (atomic_get(&button_press_pending) > 0) {
+		atomic_dec(&button_press_pending);
+		memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(button_press_count), 1);
+	}
+
 	while (atomic_get(&flush_pending) > 0) {
 		atomic_dec(&flush_pending);
 		flush_count++;

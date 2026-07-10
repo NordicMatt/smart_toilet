@@ -21,4 +21,13 @@ bool cloud_is_connected(void);
  */
 void cloud_report_flush(void);
 
+/**
+ * @brief Notify the cloud layer of a (debounced) failsafe-button press.
+ *
+ * ISR-safe (atomic increment + semaphore give only). The cloud thread reports
+ * it as the per-interval button_press_count Memfault metric, which
+ * differentiates button-triggered flushes from voice-triggered ones.
+ */
+void cloud_report_button_press(void);
+
 #endif /* CLOUD_H_ */

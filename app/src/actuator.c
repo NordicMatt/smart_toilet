@@ -205,6 +205,7 @@ static void button_pressed(const struct device *dev, struct gpio_callback *cb, u
 	last_edge = now;
 
 	LOG_INF("Failsafe switch pressed");
+	cloud_report_button_press();
 	actuator_flush();
 }
 
