@@ -152,7 +152,8 @@ static bool ww_postprocess(void)
 	 * Thread-safe (takes ctx->lock), so it cannot race the auto-collect
 	 * encode running on the system workqueue. Bins the wake-word confidence
 	 * into the per-class histogram shipped to Memfault as a CDR. */
-	nrf_edgeai_obsv_update(&ww_obsv_ctx, ww_model->decoded_output.classif.probabilities.p_f32);
+	nrf_edgeai_obsv_update_probs(&ww_obsv_ctx,
+				     ww_model->decoded_output.classif.probabilities.p_f32);
 #endif
 
 	const bool oldest_entry = (bool)(ww_history & BIT(CONFIG_WW_HISTORY_SIZE - 1));
