@@ -36,6 +36,17 @@ int dmic_init(void);
  */
 void free_dmic_buffer(void *buffer);
 
+/**
+ * @brief Restart PDM capture after the driver has wedged.
+ *
+ * A PDM ring overrun (CPU stalled by e.g. Wi-Fi scan work) halts capture;
+ * dmic_read() then returns -EAGAIN forever until a STOP/START retrigger.
+ * Call after several consecutive read failures. Re-applies the PDM gain.
+ *
+ * @return 0 on success, negative errno if the START trigger failed.
+ */
+int dmic_restart(void);
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

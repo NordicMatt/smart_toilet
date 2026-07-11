@@ -39,12 +39,21 @@ LOG_MODULE_REGISTER(main);
 
 static const struct device *const dmic_dev = DEVICE_DT_GET(DT_NODELABEL(dmic_dev));
 
+/* Consecutive dmic_read() failures before restarting PDM capture in-place
+ * (~1 s: each failed read blocks up to DMIC_READ_TIMEOUT=100 ms + 5 ms sleep).
+ * A halted driver (ring overrun during Wi-Fi scan/reconnect bursts) never
+ * recovers via reads alone; restarting here self-heals in ~100 ms where the
+ * audio watchdog would otherwise reboot at 60 s. The watchdog stays as the
+ * backstop if even restarts fail. */
+#define DMIC_ERRS_BEFORE_RESTART 10
+
 static int ww_loop(void)
 {
 	int err;
 	void *audio_buffer;
 	size_t audio_buffer_size;
 	bool ww_detected;
+	int dmic_errs = 0;
 
 	ww_reset();
 
@@ -71,9 +80,14 @@ static int ww_loop(void)
 			 * dead and the audio watchdog must fire.
 			 */
 			LOG_WRN("DMIC read error %d; skipping block", err);
+			if (++dmic_errs >= DMIC_ERRS_BEFORE_RESTART) {
+				dmic_errs = 0;
+				(void)dmic_restart();
+			}
 			k_sleep(K_MSEC(5));
 			continue;
 		}
+		dmic_errs = 0;
 
 		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 		audio_snap_feed(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
@@ -120,6 +134,7 @@ static int kws_loop(void)
 	void *audio_buffer;
 	size_t audio_buffer_size;
 	struct kws_prediction prediction;
+	int dmic_errs = 0;
 
 	uint32_t spotting_timeout = k_uptime_get_32() + CONFIG_KWS_PERIOD_MS;
 
@@ -137,9 +152,14 @@ static int kws_loop(void)
 			 * No watchdog feed on the error path.
 			 */
 			LOG_WRN("DMIC read error %d; skipping block", err);
+			if (++dmic_errs >= DMIC_ERRS_BEFORE_RESTART) {
+				dmic_errs = 0;
+				(void)dmic_restart();
+			}
 			k_sleep(K_MSEC(5));
 			continue;
 		}
+		dmic_errs = 0;
 
 		audio_proc_run(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 		audio_snap_feed(audio_buffer, DMIC_SAMPLES_IN_BLOCK);

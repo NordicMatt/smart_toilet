@@ -81,3 +81,33 @@ void free_dmic_buffer(void *buffer)
 {
 	k_mem_slab_free(&dmic_mem_slab, buffer);
 }
+
+int dmic_restart(void)
+{
+	int err;
+	const struct device *const dmic_dev = DEVICE_DT_GET(DT_NODELABEL(dmic_dev));
+
+	/* A CPU stall (e.g. Wi-Fi scan/reconnect work at higher priority) can
+	 * overrun the PDM ring; the nrfx PDM driver then halts capture and every
+	 * dmic_read() returns -EAGAIN until capture is retriggered -- reads alone
+	 * never recover it. Field signature: a wall of "DMIC read error -11" with
+	 * a wpa_supp scan timeout amid it (coredump 2026-07-11, issue 1805218207).
+	 * STOP may legitimately fail if the driver already stopped -- ignore it.
+	 */
+	(void)dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
+
+	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
+	if (err < 0) {
+		LOG_ERR("DMIC restart failed (err %d)", err);
+		return err;
+	}
+
+	/* Defensive: re-apply the PDM gain in case the driver reset it on the
+	 * stop/start cycle (it does so on configure; cheap and idempotent here).
+	 */
+	nrf_pdm_gain_set((NRF_PDM_Type *)DT_REG_ADDR(DT_NODELABEL(dmic_dev)),
+			 DMIC_PDM_GAIN, DMIC_PDM_GAIN);
+
+	LOG_WRN("DMIC capture restarted after persistent read failures");
+	return 0;
+}
