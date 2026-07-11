@@ -51,9 +51,15 @@ static int ww_loop(void)
 	print_control_output((struct control_message){CONTROL_MESSAGE_WAITING_WW});
 
 	while (true) {
-		/* Pet the liveness watchdog: reaching here proves the loop iterates. */
-		audio_watchdog_feed();
-
+		/* NOTE: the liveness watchdog is fed on PIPELINE PROGRESS (mic block
+		 * read AND accepted by the model), not merely on loop iteration.
+		 * Feeding at the loop top masked the "loop alive, mic dead" wedge:
+		 * a persistently failing dmic_read() spun through the error path,
+		 * petting the watchdog forever while producing zero inferences
+		 * (seen in the field: 45 min deaf with healthy heartbeats). The
+		 * error paths below deliberately do NOT feed, so a persistent
+		 * DMIC/inference failure trips the 60 s watchdog -> coredump (with
+		 * the error visible) -> reboot -> recovered voice path. */
 		err = dmic_read(dmic_dev, 0, &audio_buffer, &audio_buffer_size, DMIC_READ_TIMEOUT);
 		if (err < 0) {
 			/* A DMIC read error is transient (e.g. -EAGAIN: no block within
@@ -61,6 +67,8 @@ static int ww_loop(void)
 			 * reconnection). Skip this block and keep listening — a dropped
 			 * ~10 ms block is harmless. Crucially, do NOT return: that would
 			 * exit the audio loop and leave the toilet deaf until reboot.
+			 * No watchdog feed here: if this error persists, the mic is
+			 * dead and the audio watchdog must fire.
 			 */
 			LOG_WRN("DMIC read error %d; skipping block", err);
 			k_sleep(K_MSEC(5));
@@ -73,19 +81,25 @@ static int ww_loop(void)
 
 		err = ww_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &ww_detected);
 		if (err == -EBUSY) {
-			/* More data is needed. */
+			/* More data is needed: the mic delivered audio and the model
+			 * accepted it — the pipeline is healthy. */
+			audio_watchdog_feed();
 			continue;
 		} else if (err < 0) {
 			/* Edge-AI feed/inference error (e.g. -EPERM). Re-init the model
 			 * state and keep listening — do NOT return, which would exit the
 			 * audio loop and leave the toilet deaf until reboot (same rationale
 			 * as the DMIC error above). dmic_read() at the loop top paces
-			 * retries.
+			 * retries. No watchdog feed: persistent inference failure must
+			 * trip the audio watchdog.
 			 */
 			LOG_WRN("Wakeword detection error %d; resetting model and continuing", err);
 			ww_reset();
 			continue;
 		}
+
+		/* Full inference completed. */
+		audio_watchdog_feed();
 
 		if (ww_detected) {
 			audio_telemetry_detection();
@@ -114,13 +128,13 @@ static int kws_loop(void)
 	print_control_output((struct control_message){.type = CONTROL_MESSAGE_WAITING_KW});
 
 	while (IS_ENABLED(CONFIG_APP_MODE_KWS_ONLY) || spotting_timeout > k_uptime_get_32()) {
-		/* Pet the liveness watchdog: reaching here proves the loop iterates. */
-		audio_watchdog_feed();
-
+		/* Watchdog fed on pipeline progress, not loop iteration — see
+		 * ww_loop() for rationale. */
 		err = dmic_read(dmic_dev, 0, &audio_buffer, &audio_buffer_size, DMIC_READ_TIMEOUT);
 		if (err < 0) {
 			/* Transient (e.g. -EAGAIN). Skip the block and keep going rather
 			 * than exiting the audio loop. See ww_loop() for rationale.
+			 * No watchdog feed on the error path.
 			 */
 			LOG_WRN("DMIC read error %d; skipping block", err);
 			k_sleep(K_MSEC(5));
@@ -133,7 +147,8 @@ static int kws_loop(void)
 
 		err = kws_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &prediction);
 		if (err == -EBUSY) {
-			/* More data is needed. */
+			/* More data is needed: pipeline healthy. */
+			audio_watchdog_feed();
 			continue;
 		} else if (err) {
 			/* Recover and keep going rather than exiting the audio loop.
@@ -143,6 +158,9 @@ static int kws_loop(void)
 			kws_reset();
 			continue;
 		}
+
+		/* Full inference completed. */
+		audio_watchdog_feed();
 
 		if (prediction.valid) {
 			leds_blink_led1();

@@ -52,3 +52,9 @@ MEMFAULT_METRICS_KEY_DEFINE(flush_jam_count, kMemfaultMetricType_Unsigned)
  * in-progress flush counts here but produces no extra flush). Per-interval
  * event counter like flush_count. */
 MEMFAULT_METRICS_KEY_DEFINE(button_press_count, kMemfaultMetricType_Unsigned)
+
+/* Tier-0 forced Wi-Fi reconnects during the interval (uploads stalled while
+ * nominally connected -> stall monitor submitted a re-associate). A burst in
+ * one interval marks a network outage window (e.g. overnight Nest maintenance)
+ * and gives context to any upload-watchdog reboot that follows. */
+MEMFAULT_METRICS_KEY_DEFINE(wifi_reconnect_count, kMemfaultMetricType_Unsigned)

@@ -149,6 +149,11 @@ static void wifi_reconnect_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	LOG_WRN("Uploads stalled while nominally connected; forcing Wi-Fi reconnect");
+	/* Per-interval visibility into tier-0 activity: a burst of reconnects in
+	 * one heartbeat marks a network outage window (e.g. overnight mesh
+	 * maintenance) and correlates with any upload-watchdog reboot that
+	 * follows. Thread (sysworkq) context, so the metrics mutex is fine. */
+	memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(wifi_reconnect_count), 1);
 	(void)conn_mgr_all_if_disconnect(true);
 	(void)conn_mgr_all_if_connect(true);
 }
