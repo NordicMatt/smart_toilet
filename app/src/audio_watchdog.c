@@ -35,8 +35,17 @@
  * it sits on -- forces a reset. Longer than AUDIO_STALL_REBOOT_S so the software
  * monitor fires first (with a coredump) for an ordinary thread stall; this layer
  * exists for what software CANNOT catch: a total lockup where the sysclock/ISRs
- * are dead so no k_timer runs at all. */
-#define HW_WDT_TIMEOUT_MS 120000
+ * are dead so no k_timer runs at all.
+ *
+ * Sized to survive a FOTA apply: the nRF WDT keeps counting across the soft
+ * reset into MCUboot, whose swap runs against the external MX25R64 SPI-NOR
+ * secondary slot and can outlast the old 120 s budget -- every OTA then ended
+ * in a mid-swap WDT reset, reported fleet-wide as a bogus "Hardware Watchdog"
+ * reboot instead of "Firmware Update" (reboot history 2026-07-10..13: one per
+ * version boundary, on both devices). 10 min clears the slowest swap while
+ * still catching a true total lockup; the 60 s software layers above remain
+ * the fast, coredump-producing detectors. */
+#define HW_WDT_TIMEOUT_MS 600000
 static int task_wdt_ch = -1;
 #endif
 

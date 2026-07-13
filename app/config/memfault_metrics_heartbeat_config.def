@@ -58,3 +58,12 @@ MEMFAULT_METRICS_KEY_DEFINE(button_press_count, kMemfaultMetricType_Unsigned)
  * one interval marks a network outage window (e.g. overnight Nest maintenance)
  * and gives context to any upload-watchdog reboot that follows. */
 MEMFAULT_METRICS_KEY_DEFINE(wifi_reconnect_count, kMemfaultMetricType_Unsigned)
+
+/* nRF70 Wi-Fi driver data-heap health, sampled at heartbeat time. The driver
+ * allocates every RX/TX packet buffer from this dedicated pool with K_FOREVER:
+ * if it ever runs dry the Wi-Fi bottom-half blocks forever and connectivity is
+ * dead until the stall-monitor reboot (2026-07-13 wedge). free trending toward
+ * zero, or max_used approaching CONFIG_NRF_WIFI_DATA_HEAP_SIZE, is the early
+ * warning of a leak or an undersized pool. */
+MEMFAULT_METRICS_KEY_DEFINE(wifi_heap_free_bytes, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(wifi_heap_max_used_bytes, kMemfaultMetricType_Unsigned)

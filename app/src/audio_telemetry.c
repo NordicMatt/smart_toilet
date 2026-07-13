@@ -17,6 +17,7 @@
 #include <memfault_ncs.h>
 
 #include "audio_telemetry.h"
+#include "cloud.h"
 
 /* Aggregates over the current heartbeat window. Written from the audio thread,
  * read+reset from the Memfault heartbeat callback (different thread). The
@@ -75,6 +76,9 @@ void memfault_metrics_heartbeat_collect_data(void)
 	 * over this hook from it (CONFIG_MEMFAULT_NCS_IMPLEMENT_METRICS_COLLECTION=n).
 	 */
 	memfault_ncs_metrics_collect_data();
+
+	/* Wi-Fi driver heap health (wifi_heap_* metrics) — owned by cloud.c. */
+	cloud_collect_heap_metrics();
 
 	const int32_t peak = atomic_set(&peak_db_dx10, INT32_MIN);
 	const int32_t floor = atomic_set(&floor_db_dx10, INT32_MAX);

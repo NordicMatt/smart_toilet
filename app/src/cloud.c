@@ -25,7 +25,9 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/mem_stats.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys/sys_heap.h>
 #include <zephyr/dfu/mcuboot.h>
 
 #include <date_time.h>
@@ -158,6 +160,34 @@ static void wifi_reconnect_work_fn(struct k_work *work)
 	(void)conn_mgr_all_if_connect(true);
 }
 static K_WORK_DEFINE(wifi_reconnect_work, wifi_reconnect_work_fn);
+
+#if defined(CONFIG_SYS_HEAP_RUNTIME_STATS) && defined(CONFIG_NRF_WIFI_DATA_HEAP_SIZE) && \
+	!defined(CONFIG_NRF_WIFI_GLOBAL_HEAP)
+/* The nRF70 driver's dedicated data-heap pool (zephyr/modules/nrf_wifi/os/shim.c).
+ * Every RX/TX packet buffer comes from it, allocated with K_FOREVER -- if it
+ * runs dry the Wi-Fi bottom-half blocks forever and the link is dead until the
+ * stall monitor reboots (field wedge of 2026-07-13: nrf70_bh_wq parked in
+ * z_heap_alloc_helper, DNS dead, cloud stalled). These metrics make the
+ * approach to that cliff visible fleet-wide before it happens. */
+extern struct k_heap wifi_drv_data_mem_pool;
+
+void cloud_collect_heap_metrics(void)
+{
+	struct sys_memory_stats stats;
+
+	if (sys_heap_runtime_stats_get(&wifi_drv_data_mem_pool.heap, &stats) == 0) {
+		memfault_metrics_heartbeat_set_unsigned(
+			MEMFAULT_METRICS_KEY(wifi_heap_free_bytes), stats.free_bytes);
+		memfault_metrics_heartbeat_set_unsigned(
+			MEMFAULT_METRICS_KEY(wifi_heap_max_used_bytes),
+			stats.max_allocated_bytes);
+	}
+}
+#else
+void cloud_collect_heap_metrics(void)
+{
+}
+#endif
 
 /* Runs in timer (ISR) context, so it fires even if the cloud thread is wedged.
  * Escalating recovery, lightest first:

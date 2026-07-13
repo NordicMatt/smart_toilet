@@ -30,4 +30,13 @@ void cloud_report_flush(void);
  */
 void cloud_report_button_press(void);
 
+/**
+ * @brief Publish Wi-Fi driver heap health metrics into the current heartbeat.
+ *
+ * Called from memfault_metrics_heartbeat_collect_data() just before each
+ * heartbeat is serialized. No-op when the dedicated nRF70 data heap or heap
+ * runtime stats are not configured.
+ */
+void cloud_collect_heap_metrics(void);
+
 #endif /* CLOUD_H_ */
