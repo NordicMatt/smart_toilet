@@ -12,6 +12,7 @@
 
 #include "audio_stats.h"
 #include "audio_telemetry.h"
+#include "audio_watchdog.h"
 #include "dmic.h"
 
 LOG_MODULE_REGISTER(audio_stats);
@@ -61,6 +62,15 @@ void audio_stats_update(const void *buffer, size_t num_samples)
 	/* Forward levels to Memfault for remote (serial-less) diagnosis. Independent
 	 * of APP_AUDIO_STATS so the metrics survive turning the UART logging off. */
 	audio_telemetry_levels(peak_db, rms_db, clipped);
+
+	/* Feed the bad-data mic watchdog. This second is "unhealthy" only when the
+	 * mic is railed (peak at full scale) AND clipping the majority of samples --
+	 * the signature of a wedged, saturated PDM. Real speech or room noise never
+	 * sustains that, so a quiet or normally-loud room still reads as healthy and
+	 * never trips a reboot. */
+	const bool saturated = (peak >= CLIP_LEVEL) && (clipped * 2u > window_samples);
+
+	audio_watchdog_note_audio_quality(!saturated);
 #endif
 
 	window_samples = 0;

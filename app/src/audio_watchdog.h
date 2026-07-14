@@ -24,6 +24,8 @@
 #ifndef __AUDIO_WATCHDOG_H__
 #define __AUDIO_WATCHDOG_H__
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
@@ -46,6 +48,20 @@ void audio_watchdog_start(void);
  */
 void audio_watchdog_feed(void);
 
+/**
+ * @brief Report whether the last second of mic audio was usable.
+ *
+ * The liveness feed above only proves the loop iterates and the model accepts
+ * blocks -- it cannot tell real audio from a wedged PDM delivering saturated
+ * garbage, which keeps the pipeline "alive" yet deaf. Call once per one-second
+ * stats window with @p healthy = false when the mic is railed and clipping the
+ * majority of samples. If no healthy second is seen for MIC_STUCK_REBOOT_S, the
+ * watchdog reboots to fully re-init the DMIC.
+ *
+ * @param healthy True if the second carried plausibly-real audio.
+ */
+void audio_watchdog_note_audio_quality(bool healthy);
+
 #else /* CONFIG_MEMFAULT */
 
 static inline void audio_watchdog_start(void)
@@ -53,6 +69,10 @@ static inline void audio_watchdog_start(void)
 }
 static inline void audio_watchdog_feed(void)
 {
+}
+static inline void audio_watchdog_note_audio_quality(bool healthy)
+{
+	(void)healthy;
 }
 
 #endif /* CONFIG_MEMFAULT */

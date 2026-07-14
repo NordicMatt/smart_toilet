@@ -27,14 +27,17 @@ LOG_MODULE_REGISTER(dmic);
  */
 #define DMIC_PDM_GAIN (NRF_PDM_GAIN_DEFAULT + (CONFIG_APP_PDM_GAIN_DB) * 2)
 
-/* 8 blocks, not the driver's minimum of 4: each PDM halt/restart cycle can
- * strand the up-to-2 in-flight blocks inside the driver (they sit in its
- * internal queue until a later stop event releases them), and with only 4
- * blocks two failed cycles left the slab empty -- every restart then died in
- * the driver with "Failed to allocate buffer: -12" and the mic never came
- * back (field wedge of 2026-07-13, issue 1805217631). The extra 4 blocks
- * (~2.6 KB) buy several recovery attempts between reboots. */
-K_MEM_SLAB_DEFINE_STATIC(dmic_mem_slab, BLOCK_SIZE, 8, 4);
+/* 4 blocks (the nrfx PDM driver minimum). Deliberately NOT enlarged. A bigger
+ * slab was tried in v2.0.11 to let dmic_restart() recover a wedged PDM, but it
+ * backfired: with spare blocks the in-place STOP/START "succeeds" and resumes
+ * capture in a broken, saturated, free-running mode. The model still accepts
+ * those (garbage) blocks, so the liveness watchdog stays fed and the device is
+ * left PERMANENTLY DEAF instead of rebooting to recover (both toilets deaf
+ * 2026-07-14). Keeping the slab minimal makes a wedged restart fail (-12), which
+ * lets the audio watchdog reboot and fully re-init the DMIC -- the recovery that
+ * actually works. See audio_watchdog.c MIC_STUCK_REBOOT_S for the belt-and-
+ * suspenders catch on any mic that stays "flowing but garbage". */
+K_MEM_SLAB_DEFINE_STATIC(dmic_mem_slab, BLOCK_SIZE, 4, 4);
 
 int dmic_init(void)
 {
@@ -102,20 +105,6 @@ int dmic_restart(void)
 	 * STOP may legitimately fail if the driver already stopped -- ignore it.
 	 */
 	(void)dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
-
-	/* Reclaim any blocks the halted session delivered but nobody read: they
-	 * sit in the driver's RX queue holding slab blocks, and the restarted
-	 * capture needs those blocks back (the wedge that halts capture also
-	 * strands up to 2 more in the driver's internal queue, which the app
-	 * cannot reach -- the slab is oversized to absorb those; see its
-	 * definition above). Non-blocking reads until the queue reports empty.
-	 */
-	void *stale;
-	size_t stale_size;
-
-	while (dmic_read(dmic_dev, 0, &stale, &stale_size, 0) == 0) {
-		free_dmic_buffer(stale);
-	}
 
 	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
 	if (err < 0) {
