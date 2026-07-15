@@ -87,6 +87,12 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 #define RECONNECT_AFTER_S        (2 * 60)
 /* Do not re-kick a reconnect more often than this while uploads stay stalled. */
 #define RECONNECT_MIN_INTERVAL_S (2 * 60)
+/* If a genuine disconnect has not cleared via plain re-association after this
+ * long, escalate to a heavier Wi-Fi-only recovery: take the net iface fully
+ * down and back up (re-init the nRF70 link state). Still leaves audio running --
+ * only if THIS also fails through DISCONNECT_REBOOT_S do we fall back to a reboot.
+ * Between this and the reboot threshold, so re-association gets first crack. */
+#define WIFI_IFACE_RESET_S       (5 * 60)
 /* How often the stall monitor samples the progress timestamp (finer = reconnect
  * and reboot tiers fire closer to their thresholds). */
 #define STALL_CHECK_PERIOD_S 30
@@ -150,7 +156,7 @@ static void note_upload_ok(void)
 static void wifi_reconnect_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_WRN("Uploads stalled while nominally connected; forcing Wi-Fi reconnect");
+	LOG_WRN("Forcing Wi-Fi re-association to clear a stalled/half-open or dropped link");
 	/* Per-interval visibility into tier-0 activity: a burst of reconnects in
 	 * one heartbeat marks a network outage window (e.g. overnight mesh
 	 * maintenance) and correlates with any upload-watchdog reboot that
@@ -160,6 +166,23 @@ static void wifi_reconnect_work_fn(struct k_work *work)
 	(void)conn_mgr_all_if_connect(true);
 }
 static K_WORK_DEFINE(wifi_reconnect_work, wifi_reconnect_work_fn);
+
+/* Heavier Wi-Fi-only recovery than a re-associate: take the net iface fully down
+ * and back up, re-initialising the nRF70 link state, when repeated re-association
+ * has not cleared a wedge. STILL Wi-Fi-only -- runs on the workqueue, touches
+ * neither the main-thread audio loop nor the PDM mic (separate peripheral), so
+ * voice/flush keep running throughout, unlike the SoC reboot fallback. conn_mgr
+ * is not ISR-safe, so the stall monitor submits this rather than calling it. */
+static void wifi_iface_reset_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	LOG_WRN("Re-association not clearing the drop; cycling the Wi-Fi interface down/up");
+	memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(wifi_reconnect_count), 1);
+	(void)conn_mgr_all_if_down(true);
+	(void)conn_mgr_all_if_up(true);
+	(void)conn_mgr_all_if_connect(true);
+}
+static K_WORK_DEFINE(wifi_iface_reset_work, wifi_iface_reset_work_fn);
 
 #if defined(CONFIG_SYS_HEAP_RUNTIME_STATS) && defined(CONFIG_NRF_WIFI_DATA_HEAP_SIZE) && \
 	!defined(CONFIG_NRF_WIFI_GLOBAL_HEAP)
@@ -205,8 +228,16 @@ void cloud_collect_heap_metrics(void)
  *  2. Connected but the cloud thread made no progress for CLOUD_STALL_REBOOT_S:
  *     parked in an unbounded socket call; coredump + reset.
  *
- *  3. Disconnected for DISCONNECT_REBOOT_S after having been up (reconnect never
- *     re-associated): warm-reboot to force a clean bring-up.
+ *  3. Genuinely disconnected after having been up: recover the Wi-Fi WITHOUT a
+ *     reboot, escalating with time down -- (a) force a fresh RECONNECT
+ *     (re-associate), then (b) after WIFI_IFACE_RESET_S, cycle the iface fully
+ *     down/up to re-init the nRF70. conn_mgr/nRF70 retry on their own but a
+ *     wedged supplicant never re-associates (Toilet #2: assoc lost at strong
+ *     RSSI, no self-recovery). Both (a) and (b) run on the workqueue and leave
+ *     the main-thread audio loop + PDM mic running, so voice/flush never stop.
+ *     Only if the link is still down at DISCONNECT_REBOOT_S does it warm-reboot
+ *     as the last resort -- no longer needed to protect audio (the mic has its
+ *     own watchdog now), so it is purely a Wi-Fi backstop.
  *
  * The voice/flush path keeps working throughout and recovers ~16 s after any reboot.
  */
@@ -261,6 +292,31 @@ static void stall_monitor_expiry(struct k_timer *timer)
 	}
 
 	const uint32_t since_s = (uint32_t)atomic_get(&disconnected_since_s);
+
+	/* Actively re-associate while down, BEFORE escalating to a reboot. conn_mgr
+	 * and the nRF70 backend retry on their own, but a wedged supplicant (assoc
+	 * lost at strong RSSI, no self-recovery -- the observed Toilet #2 drop) only
+	 * clears on an explicit teardown + re-associate. Rate-limited to the same
+	 * cadence as the half-open kick above (shared last_reconnect_s), giving the
+	 * supplicant several tries across the disconnect window; if none take, the
+	 * reboot below is the fallback. Recovers the common transient drop without a
+	 * reboot -- no voice-path outage, and no reset of the daily-CDR uptime timer. */
+	if (since_s != 0) {
+		const uint32_t rc_s = (uint32_t)atomic_get(&last_reconnect_s);
+
+		if (rc_s == 0 || (now_s - rc_s) >= RECONNECT_MIN_INTERVAL_S) {
+			atomic_set(&last_reconnect_s, now_s);
+			/* Escalate the Wi-Fi-only recovery with time down: a light
+			 * re-associate first, then a full iface down/up once that has had
+			 * WIFI_IFACE_RESET_S to work. Both keep audio running; the reboot
+			 * below is only reached if neither clears the link. */
+			if ((now_s - since_s) >= WIFI_IFACE_RESET_S) {
+				k_work_submit(&wifi_iface_reset_work);
+			} else {
+				k_work_submit(&wifi_reconnect_work);
+			}
+		}
+	}
 
 	if (since_s != 0 && (now_s - since_s) >= DISCONNECT_REBOOT_S) {
 		/* Shares the SoftwareWatchdog reason with the cloud stall above; the

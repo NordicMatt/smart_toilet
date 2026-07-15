@@ -31,12 +31,6 @@ LOG_MODULE_REGISTER(main);
 
 #define DMIC_READ_TIMEOUT 100
 
-/* Give Wi-Fi/Memfault a short head start before audio capture so their bring-up
- * doesn't fight the DMIC + edge-AI inference for CPU/RAM. Bounded: after this we
- * start audio regardless, so a Wi-Fi outage at boot never leaves the toilet
- * deaf. The cloud thread keeps trying to connect independently. */
-#define AUDIO_START_NET_WAIT_S 30
-
 static const struct device *const dmic_dev = DEVICE_DT_GET(DT_NODELABEL(dmic_dev));
 
 /* Consecutive dmic_read() failures before restarting PDM capture in-place
@@ -249,26 +243,16 @@ int main(void)
 
 	LOG_INF("Initialization completed, check output on VCOM0");
 
-	/* Prefer to let Wi-Fi come up first (so its TLS bring-up doesn't compete
-	 * with the DMIC + edge-AI inference), but never gate the toilet's core
-	 * voice function on the network: wait at most AUDIO_START_NET_WAIT_S, then
-	 * start audio regardless. The cloud thread (cloud.c) keeps bringing up
-	 * Wi-Fi/Memfault independently via conn_mgr, so they still connect later
-	 * even if they are not ready yet here.
-	 */
-	LOG_INF("Waiting up to %d s for network before starting audio...",
-		AUDIO_START_NET_WAIT_S);
-	for (int i = 0; i < AUDIO_START_NET_WAIT_S && !cloud_is_connected(); i++) {
-		k_sleep(K_SECONDS(1));
-	}
-	if (cloud_is_connected()) {
-		LOG_INF("Network connected; starting audio capture");
-	} else {
-		LOG_WRN("No network after %d s; starting audio anyway "
-			"(voice works offline; Wi-Fi/cloud will connect when available)",
-			AUDIO_START_NET_WAIT_S);
-	}
-
+	/* Start audio immediately -- the DMIC + edge-AI inference are the toilet's
+	 * core function and must not wait on the network. The cloud thread brings up
+	 * Wi-Fi/Memfault in parallel via conn_mgr. Earlier builds waited up to 30 s
+	 * for Wi-Fi first so its TLS bring-up wouldn't compete with inference for CPU,
+	 * but that cost an up-to-30 s voice outage after every recovery reboot; now
+	 * that the mic has its own liveness/quality watchdog and Wi-Fi recovers
+	 * without a reboot, we start audio first and let Wi-Fi race. (The DMIC is
+	 * DMA-fed, so no samples are lost if inference briefly jitters during the
+	 * concurrent TLS handshake.) */
+	LOG_INF("Starting audio capture immediately; Wi-Fi/cloud come up in parallel");
 	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
 	if (err < 0) {
 		LOG_ERR("Failed to start DMIC (err %d)", err);
