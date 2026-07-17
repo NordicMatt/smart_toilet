@@ -197,6 +197,86 @@ static int kws_loop(void)
 	return 0;
 }
 
+/* The audio pipeline runs on its own thread so Wi-Fi control-plane work cannot
+ * starve it. The wpa_supplicant thread runs at preemptive priority 0 by default
+ * and its scan/reconnect bursts have repeatedly stalled the loop (then on the
+ * priority-6 main thread) past the ~40 ms the 4-block PDM ring tolerates,
+ * halting capture (see dmic_restart()). Priority 0 for audio -- with the
+ * supplicant lowered to 3 in cloud.conf -- lets a due DMIC block preempt that
+ * work, while the cooperative system workqueue (-1) and nRF70 IRQ workqueue
+ * (-15) stay above audio, so Wi-Fi interrupt handling is unaffected. Despite
+ * the high priority the loop cannot hog the CPU: it blocks in dmic_read() for
+ * every 10 ms block and inference is a few ms every third block.
+ *
+ * Started via k_thread_start() from main() after init and the network head
+ * start; SYS_FOREVER_MS keeps it parked until then.
+ */
+static void audio_thread_fn(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	int err;
+
+	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
+	if (err < 0) {
+		/* No watchdog is armed yet, so this leaves the device cloud-alive
+		 * but deaf -- same as the pre-thread behavior. It has never been
+		 * seen in the field; the watchdog deliberately only arms once
+		 * capture has started so boot cannot trip it.
+		 */
+		LOG_ERR("Failed to start DMIC (err %d)", err);
+		return;
+	}
+
+	/* Steady LED1 = audio sampling is live (mic is being read). Signals when
+	 * to start speaking; LED0 still blinks on each wake-word detection.
+	 */
+	leds_on_led1();
+	LOG_INF("Audio sampling started (LED1 on)");
+
+	/* Arm the audio-loop liveness watchdog now that capture is running. Boot and
+	 * the network wait are deliberately excluded so they cannot trip it; a wedge
+	 * from here on (a silently deaf toilet) captures a coredump + reboots.
+	 */
+	audio_watchdog_start();
+
+	while (true) {
+		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS) ||
+		    IS_ENABLED(CONFIG_APP_MODE_WW_ONLY)) {
+			err = ww_loop();
+			if (err) {
+				break;
+			}
+		}
+
+		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS)) {
+			leds_on_led0();
+		}
+
+		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS) ||
+		    IS_ENABLED(CONFIG_APP_MODE_KWS_ONLY)) {
+			err = kws_loop();
+			if (err) {
+				break;
+			}
+		}
+
+		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS)) {
+			leds_off_led0();
+		}
+	}
+
+	/* Exiting stops the watchdog feeds, so a persistent pipeline failure
+	 * ends in a coredump + reboot rather than a silently deaf device.
+	 */
+	LOG_ERR("Audio loop exited (err %d); audio watchdog will recover", err);
+}
+
+K_THREAD_DEFINE(audio, CONFIG_APP_AUDIO_THREAD_STACK_SIZE, audio_thread_fn, NULL, NULL, NULL,
+		CONFIG_APP_AUDIO_THREAD_PRIORITY, 0, SYS_FOREVER_MS);
+
 int main(void)
 {
 	int err;
@@ -269,49 +349,10 @@ int main(void)
 			AUDIO_START_NET_WAIT_S);
 	}
 
-	err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
-	if (err < 0) {
-		LOG_ERR("Failed to start DMIC (err %d)", err);
-		return err;
-	}
-
-	/* Steady LED1 = audio sampling is live (mic is being read). Signals when
-	 * to start speaking; LED0 still blinks on each wake-word detection.
+	/* Hand the pipeline to the dedicated audio thread (see audio_thread_fn
+	 * above for the priority rationale). main's job ends here.
 	 */
-	leds_on_led1();
-	LOG_INF("Audio sampling started (LED1 on)");
-
-	/* Arm the audio-loop liveness watchdog now that capture is running. Boot and
-	 * the network wait above are deliberately excluded so they cannot trip it; a
-	 * wedge from here on (a silently deaf toilet) captures a coredump + reboots.
-	 */
-	audio_watchdog_start();
-
-	while (true) {
-		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS) ||
-		    IS_ENABLED(CONFIG_APP_MODE_WW_ONLY)) {
-			err = ww_loop();
-			if (err) {
-				return err;
-			}
-		}
-
-		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS)) {
-			leds_on_led0();
-		}
-
-		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS) ||
-		    IS_ENABLED(CONFIG_APP_MODE_KWS_ONLY)) {
-			err = kws_loop();
-			if (err) {
-				return err;
-			}
-		}
-
-		if (IS_ENABLED(CONFIG_APP_MODE_WW_GATED_KWS)) {
-			leds_off_led0();
-		}
-	}
+	k_thread_start(audio);
 
 	return 0;
 }

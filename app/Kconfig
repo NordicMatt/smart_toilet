@@ -156,6 +156,25 @@ config APP_AUDIO_SNAP_SECONDS
 	help
 	  Length of the recorded snapshot. RAM cost is 32 KB per second.
 
+config APP_AUDIO_THREAD_PRIORITY
+	int "Audio pipeline thread priority"
+	range 0 14
+	default 0
+	help
+	  Preemptive priority of the dedicated audio thread that runs the
+	  DMIC read + wake-word/KWS inference loop. Priority 0 puts it above
+	  the wpa_supplicant thread (lowered in cloud.conf) so Wi-Fi
+	  scan/reconnect bursts cannot stall the loop long enough to overrun
+	  the 4-block PDM DMA ring, while staying below the cooperative
+	  network and Wi-Fi driver workqueues.
+
+config APP_AUDIO_THREAD_STACK_SIZE
+	int "Audio pipeline thread stack size"
+	default 4096
+	help
+	  Stack for the audio thread. Sized like the main thread stack that
+	  previously ran this loop (audio processing + edge-AI inference).
+
 config KWS_PERIOD_MS
 	int "Length of keyword spotting window in wakeword-gated mode"
 	default 3000
