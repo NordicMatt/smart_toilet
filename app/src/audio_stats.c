@@ -63,12 +63,16 @@ void audio_stats_update(const void *buffer, size_t num_samples)
 	 * of APP_AUDIO_STATS so the metrics survive turning the UART logging off. */
 	audio_telemetry_levels(peak_db, rms_db, clipped);
 
-	/* Feed the bad-data mic watchdog. This second is "unhealthy" only when the
-	 * mic is railed (peak at full scale) AND clipping the majority of samples --
-	 * the signature of a wedged, saturated PDM. Real speech or room noise never
-	 * sustains that, so a quiet or normally-loud room still reads as healthy and
-	 * never trips a reboot. */
-	const bool saturated = (peak >= CLIP_LEVEL) && (clipped * 2u > window_samples);
+	/* Feed the bad-data mic watchdog. This second is "unhealthy" when the mic
+	 * is railed (peak at full scale). The original criterion also required the
+	 * majority of samples to clip, but a second wedge variant (Toilet #2,
+	 * 2026-07-19, ~10 h deaf) rails the peak every second while clipping only
+	 * a minority of samples (~-13 dBFS RMS) -- it sailed under the AND and the
+	 * reboot never fired. A railed peak alone is safe as the trigger: a real
+	 * room rails only on brief transients (clap, door slam), and the watchdog
+	 * reboots only after MIC_STUCK_REBOOT_S with not a single clean second --
+	 * a bathroom never rails full-scale every second for 5 straight minutes. */
+	const bool saturated = (peak >= CLIP_LEVEL);
 
 	audio_watchdog_note_audio_quality(!saturated);
 #endif
