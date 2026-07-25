@@ -541,11 +541,31 @@ static void run_drain_window(void)
 
 	LOG_INF("DRAIN window: radio on, connecting...");
 	(void)conn_mgr_all_if_up(true);
-	(void)conn_mgr_all_if_connect(true);
 
-	if (k_sem_take(&network_ready_sem, K_SECONDS(CONNECT_WAIT_S)) != 0) {
-		LOG_WRN("DRAIN window: Wi-Fi did not connect; retrying next period");
-		goto out;
+	/* After if_up the supplicant re-attaches to the iface ASYNCHRONOUSLY; a
+	 * connect requested before that completes fails with -ENOTSUP (seen on
+	 * the first on-device cycle, coredump 2026-07-25: every sleep window
+	 * failed on a one-shot connect racing the supplicant, and only the boot
+	 * path -- where the supplicant is already attached -- ever connected).
+	 * Retry the connect while waiting instead of requesting it once.
+	 */
+	{
+		const int64_t give_up_ms =
+			k_uptime_get() + (int64_t)CONNECT_WAIT_S * MSEC_PER_SEC;
+		bool up = false;
+
+		while (k_uptime_get() < give_up_ms) {
+			note_progress();
+			(void)conn_mgr_all_if_connect(true);
+			if (k_sem_take(&network_ready_sem, K_SECONDS(10)) == 0) {
+				up = true;
+				break;
+			}
+		}
+		if (!up) {
+			LOG_WRN("DRAIN window: Wi-Fi did not connect; retrying next period");
+			goto out;
+		}
 	}
 
 	/* TLS needs a valid wall clock. */
