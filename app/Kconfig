@@ -156,6 +156,25 @@ config APP_AUDIO_SNAP_SECONDS
 	help
 	  Length of the recorded snapshot. RAM cost is 32 KB per second.
 
+config APP_CONN_DUTY_CYCLE
+	bool "Duty-cycled connectivity (low-power)"
+	help
+	  Replace always-on connectivity with periodic DRAIN windows: bring
+	  Wi-Fi up, upload buffered Memfault data, run one FOTA check, then
+	  take the interface fully down (radio off) until the next window.
+	  Audio capture and inference are unaffected and stay always-on.
+	  Between windows there is deliberately no Wi-Fi association, which
+	  sidesteps the silent-drop and link-flap failure classes entirely.
+
+config APP_CONN_DRAIN_PERIOD_S
+	int "Seconds of radio-off time between DRAIN windows"
+	depends on APP_CONN_DUTY_CYCLE
+	default 3600
+	help
+	  Off-time between the end of one DRAIN window and the start of the
+	  next. The fleet Device Offline alert threshold must comfortably
+	  exceed this (it was raised to 2.5 h for the default 1 h period).
+
 config APP_AUDIO_THREAD_PRIORITY
 	int "Audio pipeline thread priority"
 	range 0 14

@@ -100,6 +100,24 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
 #define NET_BRINGUP_MAX_ATTEMPTS 5
 #define NET_BRINGUP_RETRY_DELAY	 K_SECONDS(5)
 
+#if defined(CONFIG_APP_CONN_DUTY_CYCLE)
+/* --- Duty-cycled connectivity (low-power branch, Phase 1) ---
+ * Simple cycle: wake on a period, connect, drain accumulated Memfault data,
+ * check for firmware, radio off. While OFFLINE there is no association at
+ * all, so the half-open link, silent-drop, and link-flap heap-pressure
+ * failure classes cannot occur; the recovery ladder and its watchdogs are
+ * only armed while a window is open (window_active). The one always-armed
+ * backstop is the duty-aware upload watchdog: two full periods with no
+ * confirmed upload = something is persistently wrong -> coredump + reboot. */
+#define DRAIN_PERIOD_S	 CONFIG_APP_CONN_DRAIN_PERIOD_S
+/* Give up on connecting this cycle if Wi-Fi does not come up in this long
+ * (AP down/out of range); the radio goes back off until the next period. */
+#define CONNECT_WAIT_S	 300
+#define UPLOAD_WATCHDOG_DUTY_S (2 * DRAIN_PERIOD_S + CONNECT_WAIT_S)
+/* 1 while a DRAIN window is open; gates every in-window watchdog tier. */
+static atomic_t window_active = ATOMIC_INIT(0);
+#endif /* CONFIG_APP_CONN_DUTY_CYCLE */
+
 /* Persisted total flush count: settings key "toilet/flush_count". */
 #define FLUSH_COUNT_KEY	    "toilet/flush_count"
 
@@ -247,6 +265,26 @@ static void stall_monitor_expiry(struct k_timer *timer)
 
 	const uint32_t now_s = k_uptime_get_32() / MSEC_PER_SEC;
 
+#if defined(CONFIG_APP_CONN_DUTY_CYCLE)
+	/* OFFLINE by design (radio off between DRAIN windows): being
+	 * disconnected is the intended state, so every in-window tier below is
+	 * skipped. The only thing that stays armed is the duty-aware upload
+	 * backstop -- if two full periods plus a window pass with no confirmed
+	 * upload, the window logic's own failed_windows escalation has also
+	 * failed and a coredump + reboot is the remaining recovery.
+	 */
+	if (atomic_get(&window_active) != 1) {
+		if (atomic_get(&ever_uploaded) == 1) {
+			const uint32_t up_s = (uint32_t)atomic_get(&last_upload_ok_s);
+
+			if ((now_s - up_s) >= UPLOAD_WATCHDOG_DUTY_S) {
+				MEMFAULT_SOFTWARE_WATCHDOG();
+			}
+		}
+		return;
+	}
+#endif /* CONFIG_APP_CONN_DUTY_CYCLE */
+
 	/* (0) Reconnect-not-reboot: uploads stalled while still nominally connected
 	 * -> the link likely went half-open. Kick a fresh association (in thread
 	 * context), rate-limited, before the reboot tiers escalate.
@@ -262,14 +300,22 @@ static void stall_monitor_expiry(struct k_timer *timer)
 		}
 	}
 
-	/* (1) Nothing reached Memfault for UPLOAD_WATCHDOG_S despite the reconnect
-	 * attempts above. Gated on ever_uploaded so a unit that never reaches the
-	 * cloud parks instead of reboot-looping. Coredump reveals the wedge.
+	/* (1) Nothing reached Memfault for the upload-watchdog threshold despite
+	 * the reconnect attempts above. Gated on ever_uploaded so a unit that never
+	 * reaches the cloud parks instead of reboot-looping. Coredump reveals the
+	 * wedge. In duty-cycle builds the threshold must span the offline period:
+	 * at window open the last confirmed upload is legitimately a full
+	 * DRAIN_PERIOD_S old, so the 20-min always-on value would fire instantly.
 	 */
 	if (atomic_get(&ever_uploaded) == 1) {
 		const uint32_t up_s = (uint32_t)atomic_get(&last_upload_ok_s);
+#if defined(CONFIG_APP_CONN_DUTY_CYCLE)
+		const uint32_t upload_wd_s = UPLOAD_WATCHDOG_DUTY_S;
+#else
+		const uint32_t upload_wd_s = UPLOAD_WATCHDOG_S;
+#endif
 
-		if ((now_s - up_s) >= UPLOAD_WATCHDOG_S) {
+		if ((now_s - up_s) >= upload_wd_s) {
 			MEMFAULT_SOFTWARE_WATCHDOG();
 		}
 	}
@@ -477,6 +523,90 @@ static void date_time_evt_handler(const struct date_time_evt *evt)
 	}
 }
 
+#if defined(CONFIG_APP_CONN_DUTY_CYCLE)
+/* Run one DRAIN window: radio on, connect, NTP, confirm image, drain
+ * accumulated Memfault data, one FOTA check, radio off. It takes however
+ * long it takes; the only bail-out is Wi-Fi not coming up at all
+ * (CONNECT_WAIT_S), in which case the radio goes back off until next period.
+ */
+static void run_drain_window(void)
+{
+	/* Fresh baselines so the in-window ladder starts from "now", not from
+	 * state left over by the previous window's deliberate teardown.
+	 */
+	atomic_set(&disconnected_since_s, 0);
+	atomic_set(&last_reconnect_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
+	k_sem_reset(&network_ready_sem);
+	atomic_set(&window_active, 1);
+
+	LOG_INF("DRAIN window: radio on, connecting...");
+	(void)conn_mgr_all_if_up(true);
+	(void)conn_mgr_all_if_connect(true);
+
+	if (k_sem_take(&network_ready_sem, K_SECONDS(CONNECT_WAIT_S)) != 0) {
+		LOG_WRN("DRAIN window: Wi-Fi did not connect; retrying next period");
+		goto out;
+	}
+
+	/* TLS needs a valid wall clock. */
+	while (atomic_get(&connected) == 1) {
+		note_progress();
+		(void)date_time_update_async(date_time_evt_handler);
+		if (k_sem_take(&date_time_ready_sem, K_SECONDS(DATE_TIME_TIMEOUT_S)) == 0) {
+			break;
+		}
+		LOG_WRN("Failed to obtain date/time, retrying");
+	}
+	if (atomic_get(&connected) != 1) {
+		goto out;
+	}
+
+	/* Connectivity proven: confirm a freshly-swapped image (see the
+	 * always-on path below for rationale).
+	 */
+	if (!boot_is_img_confirmed()) {
+		int cerr = boot_write_img_confirmed();
+
+		if (cerr) {
+			LOG_ERR("Failed to confirm running image (err %d)", cerr);
+		} else {
+			LOG_INF("Running image confirmed (FOTA update made permanent)");
+		}
+	}
+
+	record_flushes();
+	upload_memfault_data();
+	check_fota();
+	/* Anything captured during the window (e.g. the FOTA-check metrics). */
+	upload_memfault_data();
+
+out:
+	atomic_set(&window_active, 0);
+	LOG_INF("DRAIN window done; radio off for %d s", DRAIN_PERIOD_S);
+	(void)conn_mgr_all_if_disconnect(true);
+	(void)conn_mgr_all_if_down(true);
+}
+
+/* Sleep out the OFFLINE period while staying responsive to flush/button
+ * events, which must be recorded (metrics + NVS) as they happen so a
+ * mid-period reboot cannot lose them.
+ */
+static void offline_wait(void)
+{
+	const int64_t end_ms = k_uptime_get() + (int64_t)DRAIN_PERIOD_S * MSEC_PER_SEC;
+
+	while (k_uptime_get() < end_ms) {
+		note_progress();
+		const int64_t remain_ms = end_ms - k_uptime_get();
+
+		if (k_sem_take(&flush_event_sem,
+			       K_MSEC(MIN(remain_ms, 60 * MSEC_PER_SEC))) == 0) {
+			record_flushes();
+		}
+	}
+}
+#endif /* CONFIG_APP_CONN_DUTY_CYCLE */
+
 static void cloud_thread_fn(void)
 {
 	/* Restore the persisted lifetime flush count from NVS. Best-effort: a
@@ -499,6 +629,25 @@ static void cloud_thread_fn(void)
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
 	net_mgmt_add_event_callback(&l4_cb);
 	date_time_register_handler(date_time_evt_handler);
+
+#if defined(CONFIG_APP_CONN_DUTY_CYCLE)
+	/* Duty-cycled main loop. The first window runs immediately at boot:
+	 * that uploads the previous boot's reboot reason and any coredump
+	 * promptly (a crash never waits out an offline period to be reported)
+	 * and doubles as the FOTA path for a freshly-swapped image to confirm
+	 * itself. After that: window, radio off, sleep, repeat.
+	 */
+	memfault_metrics_connectivity_connected_state_change(
+		kMemfaultMetricsConnectivityState_Started);
+	note_progress();
+	k_timer_start(&cloud_stall_timer, K_SECONDS(STALL_CHECK_PERIOD_S),
+		      K_SECONDS(STALL_CHECK_PERIOD_S));
+
+	while (true) {
+		run_drain_window();
+		offline_wait();
+	}
+#else /* !CONFIG_APP_CONN_DUTY_CYCLE: always-on connectivity */
 
 	/* Bring all interfaces up and request connectivity (Wi-Fi uses the
 	 * credentials stored via the `wifi cred` shell / static config). This is
@@ -600,6 +749,7 @@ static void cloud_thread_fn(void)
 
 		LOG_INF("Disconnected; will re-establish when network returns");
 	}
+#endif /* CONFIG_APP_CONN_DUTY_CYCLE */
 }
 
 /* Stack covers the Memfault HTTPS client (TLS handshake + chunk POST) and, when
