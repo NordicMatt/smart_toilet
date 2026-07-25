@@ -463,12 +463,17 @@ static void upload_memfault_data(void)
 	}
 }
 
-/* Ask Memfault whether a newer release is deployed to this device's cohort. If
- * so, memfault_zephyr_fota_start() downloads it (HTTPS) into the MCUboot
- * secondary slot in external flash and reboots to apply it on success, so this
- * only returns when there is no update (0) or on error (<0).
+/* Ask Memfault whether a newer release is deployed to this device's cohort.
+ * Returns memfault_zephyr_fota_start()'s result: 0 = no update, 1 = update
+ * found and download STARTED (the download is ASYNCHRONOUS -- it runs on the
+ * downloader thread and the device reboots from its completion callback on
+ * success; the caller must keep the network up until then), <0 = error.
+ * The old claim here that this call blocks until the download finishes was
+ * wrong for the NCS backend and cost Toilet #2 three missed updates in a row
+ * (2026-07-25): the duty-cycle window closed seconds after the download
+ * started and the radio-off killed it every time.
  */
-static void check_fota(void)
+static int check_fota(void)
 {
 	int err = memfault_zephyr_fota_start();
 
@@ -479,6 +484,8 @@ static void check_fota(void)
 		 * path works -- a denser liveness signal than the 10-min heartbeat. */
 		note_upload_ok();
 	}
+
+	return err;
 }
 
 static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
@@ -596,7 +603,24 @@ static void run_drain_window(void)
 
 	record_flushes();
 	upload_memfault_data();
-	check_fota();
+
+	if (check_fota() == 1) {
+		/* An update download is running on the downloader thread; closing
+		 * the window now would kill it (that is exactly what stranded
+		 * Toilet #2 on 2.1.0). Hold the window open: on success the FOTA
+		 * completion callback reboots the device and this loop never
+		 * exits; on a failed/stalled download, give up after a bound
+		 * comfortably above the ~3.5 min a full image takes, close the
+		 * window, and let the next period retry.
+		 */
+		LOG_INF("FOTA download in progress; holding DRAIN window open");
+		for (int i = 0; i < (15 * 60) / 5; i++) {
+			note_progress();
+			k_sleep(K_SECONDS(5));
+		}
+		LOG_WRN("FOTA download did not complete within 15 min; closing window");
+	}
+
 	/* Anything captured during the window (e.g. the FOTA-check metrics). */
 	upload_memfault_data();
 
