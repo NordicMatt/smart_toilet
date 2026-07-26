@@ -20,7 +20,8 @@ VERSION="${1:?usage: $0 <version> <cohort>   e.g. 2.2.0+0 toilet-2-only}"
 COHORT="${2:?usage: $0 <version> <cohort>   e.g. 2.2.0+0 toilet-2-only}"
 
 CLI="${MEMFAULT_CLI:-$HOME/.memfault-venv/bin/memfault}"
-EMAIL="${MEMFAULT_EMAIL:-heinsmatt@gmail.com}"
+# The Memfault account is the Nordic work address, NOT the git/gmail identity.
+EMAIL="${MEMFAULT_EMAIL:-matthew.heins@nordicsemi.no}"
 
 [ -x "$CLI" ] || { echo "memfault CLI not found at $CLI" >&2; exit 1; }
 
