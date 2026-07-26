@@ -173,7 +173,12 @@ config APP_CONN_DRAIN_PERIOD_S
 	help
 	  Off-time between the end of one DRAIN window and the start of the
 	  next. The fleet Device Offline alert threshold must comfortably
-	  exceed this (it was raised to 2.5 h for the default 1 h period).
+	  exceed this or every sleep window pages the whole team.
+	  Raising this also raises the RAM cost of Memfault event storage
+	  (every heartbeat fired while offline is buffered until the next
+	  window drains it), so CONFIG_MEMFAULT_METRICS_HEARTBEAT_INTERVAL_SECS
+	  and CONFIG_MEMFAULT_EVENT_STORAGE_SIZE must be re-sized together
+	  with it. lowpower.conf sets all three as a matched set.
 
 config APP_AUDIO_THREAD_PRIORITY
 	int "Audio pipeline thread priority"

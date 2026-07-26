@@ -40,6 +40,10 @@
 #include <memfault/ports/zephyr/http.h>
 #include <memfault/ports/zephyr/fota.h>
 
+#if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
+#include <nrf_edgeai_obsv/nrf_edgeai_obsv_memfault.h>
+#endif
+
 #include "cloud.h"
 
 LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
@@ -602,6 +606,27 @@ static void run_drain_window(void)
 	}
 
 	record_flushes();
+
+	/* Re-stage the edge-AI wake-word histogram so the once-a-day upload
+	 * carries a snapshot taken AT window time. The library's own auto-collect
+	 * timer is uptime-relative and drifts against the DRAIN period, so without
+	 * this the daily report could ship a snapshot up to one auto-collect
+	 * interval stale. Nothing is lost either way (the histogram is cumulative
+	 * since boot and nrf_edgeai_obsv_reset() is never called, so a re-staged
+	 * CDR is a superset of the one it overwrites) -- this is purely about the
+	 * daily report being current rather than hours behind. Best-effort: a
+	 * failed encode just means the previously staged CDR drains instead.
+	 */
+#if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
+	{
+		int cdr_err = nrf_edgeai_obsv_memfault_collect();
+
+		if (cdr_err) {
+			LOG_WRN("Edge-AI CDR collect failed (err %d); draining previous", cdr_err);
+		}
+	}
+#endif
+
 	upload_memfault_data();
 
 	if (check_fota() == 1) {
