@@ -180,6 +180,21 @@ config APP_CONN_DRAIN_PERIOD_S
 	  and CONFIG_MEMFAULT_EVENT_STORAGE_SIZE must be re-sized together
 	  with it. lowpower.conf sets all three as a matched set.
 
+config APP_POWER_MARKER
+	bool "Drive a GPIO high for the duration of each DRAIN window"
+	depends on APP_CONN_DUTY_CYCLE
+	help
+	  Bench instrumentation for current measurement. Drives the
+	  power_marker devicetree node (P1.13 on the DK, broken out on header
+	  P2) HIGH from the moment the DRAIN window opens the radio until
+	  after the interface is taken back down, and LOW while sleeping.
+	  Wire it to a Power Profiler Kit II digital input (D0-D7) and the
+	  logic channel brackets exactly the radio-on region of the current
+	  trace, so "is the nRF70 actually powered down between windows"
+	  becomes a direct read rather than an inference.
+	  Bench builds only -- see app/bench_power.conf. Leave off in field
+	  builds so the pin stays free.
+
 config APP_AUDIO_THREAD_PRIORITY
 	int "Audio pipeline thread priority"
 	range 0 14

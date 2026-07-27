@@ -42,6 +42,18 @@
 		compatible = "smart-toilet,flush-button";
 		gpios = <&gpio1 8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 	};
+
+	/* Bench power-measurement marker on P1.13 (see bench_power.conf).
+	 * Driven HIGH for the whole DRAIN window and LOW between windows so a
+	 * PPK2 digital channel brackets the radio-on period on the current
+	 * trace. Only claimed when CONFIG_APP_POWER_MARKER=y, so field builds
+	 * leave the pin untouched. P1.13 is free: P1.12 is the Hall sensor and
+	 * P1.14/P1.15 are the PDM mic, and the EB II uses P1.04/05/07/10/11.
+	 */
+	power_marker: power-marker {
+		compatible = "smart-toilet,power-marker";
+		gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &uart30 {

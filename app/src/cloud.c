@@ -44,6 +44,10 @@
 #include <nrf_edgeai_obsv/nrf_edgeai_obsv_memfault.h>
 #endif
 
+#if defined(CONFIG_APP_POWER_MARKER)
+#include <zephyr/drivers/gpio.h>
+#endif
+
 #include "cloud.h"
 
 LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
@@ -540,6 +544,35 @@ static void date_time_evt_handler(const struct date_time_evt *evt)
  * long it takes; the only bail-out is Wi-Fi not coming up at all
  * (CONNECT_WAIT_S), in which case the radio goes back off until next period.
  */
+#if defined(CONFIG_APP_POWER_MARKER)
+static const struct gpio_dt_spec power_marker =
+	GPIO_DT_SPEC_GET(DT_NODELABEL(power_marker), gpios);
+
+/* Bracket the radio-on region for a PPK2 logic channel. Best-effort and
+ * deliberately silent on failure: this is bench instrumentation and must never
+ * be able to break the connectivity path it is measuring.
+ */
+static void power_marker_set(int on)
+{
+	if (!gpio_is_ready_dt(&power_marker)) {
+		return;
+	}
+	(void)gpio_pin_set_dt(&power_marker, on);
+}
+
+static void power_marker_init(void)
+{
+	if (!gpio_is_ready_dt(&power_marker)) {
+		LOG_WRN("Power marker GPIO not ready; current trace will be unmarked");
+		return;
+	}
+	(void)gpio_pin_configure_dt(&power_marker, GPIO_OUTPUT_INACTIVE);
+}
+#else
+#define power_marker_set(on) ((void)0)
+#define power_marker_init()  ((void)0)
+#endif /* CONFIG_APP_POWER_MARKER */
+
 static void run_drain_window(void)
 {
 	/* Fresh baselines so the in-window ladder starts from "now", not from
@@ -549,6 +582,11 @@ static void run_drain_window(void)
 	atomic_set(&last_reconnect_s, (atomic_val_t)(k_uptime_get_32() / MSEC_PER_SEC));
 	k_sem_reset(&network_ready_sem);
 	atomic_set(&window_active, 1);
+
+	/* Raise BEFORE if_up so the marker's rising edge precedes the first
+	 * milliamp of radio activity; the trace must not start mid-ramp.
+	 */
+	power_marker_set(1);
 
 	LOG_INF("DRAIN window: radio on, connecting...");
 	(void)conn_mgr_all_if_up(true);
@@ -654,6 +692,13 @@ out:
 	LOG_INF("DRAIN window done; radio off for %d s", DRAIN_PERIOD_S);
 	(void)conn_mgr_all_if_disconnect(true);
 	(void)conn_mgr_all_if_down(true);
+
+	/* Drop only AFTER if_down returns, so the marker's falling edge is the
+	 * moment the teardown completed. Any current still being drawn to the
+	 * right of this edge is the radio NOT having powered down -- which is
+	 * the whole question this instrumentation exists to answer.
+	 */
+	power_marker_set(0);
 }
 
 /* Sleep out the OFFLINE period while staying responsive to flush/button
@@ -678,6 +723,11 @@ static void offline_wait(void)
 
 static void cloud_thread_fn(void)
 {
+	/* Configure the bench marker low before the first window so the trace
+	 * has a defined baseline from boot (no-op in field builds).
+	 */
+	power_marker_init();
+
 	/* Restore the persisted lifetime flush count from NVS. Best-effort: a
 	 * failure here only means the flush counter starts at 0, not a fatal
 	 * condition, so log and continue.

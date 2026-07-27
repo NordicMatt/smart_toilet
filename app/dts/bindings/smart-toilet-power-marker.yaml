@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Nordic Semiconductor ASA
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+
+description: |
+  Bench-only power-measurement marker. A single GPIO output driven HIGH for
+  the whole duration of a connectivity DRAIN window (radio on) and LOW
+  between windows, so a Power Profiler Kit II logic channel brackets exactly
+  the radio-on period on the current trace. Not populated in field builds.
+
+compatible: "smart-toilet,power-marker"
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true
+    description: GPIO wired to a PPK2 digital input (D0-D7).
