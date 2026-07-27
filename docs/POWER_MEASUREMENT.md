@@ -143,6 +143,51 @@ changes.
 - nRF Connect for Desktop polls serial ports for device discovery, which can
   disturb a scripted capture. Close it first
 
+## SoC optimisation attempts (2026-07-27)
+
+All measured at P14, ampere mode, 1.8 V, same 180-380 s method.
+
+| Build | baseline | vs bench |
+| --- | --- | --- |
+| bench (serial + log + console) | 0.650 mA | — |
+| `bench_quiet.conf` (SERIAL/CONSOLE off) | **0.622 mA** | **-28 uA** |
+| `bench_pm.conf` (PM_DEVICE + RUNTIME) | 0.649 mA | ~0 |
+
+**`PM_DEVICE_RUNTIME` saves nothing — do not adopt.** Functionally safe
+(audio ran, DHCP landed, window completed, watchdog quiet), but the
+peripherals that dominate are the ones actively in use. See
+`app/bench_pm.conf`.
+
+**`CONFIG_PM` is unavailable.** It depends on `HAS_PM`, which nRF54LM20 does
+not advertise in NCS 3.4.0. Not a loss: the idle path is WFI, which is how
+nRF54L reaches System ON IDLE (~3 uA).
+
+**Serial-off was NOT promoted to the field build.** 28 uA is ~4% of the SoC
+baseline and ~2% of the system budget, and the console has repeatedly been
+needed for debugging. See `app/bench_quiet.conf`.
+
+### DC/DC is already on — and your custom board must replicate it
+
+The DK's board DTSI sets `&vregmain { status = "okay";
+regulator-initial-mode = <NRF5X_REG_MODE_DCDC>; }`, confirmed as
+`regulator-initial-mode = <0x1>` in the generated devicetree. Omitting this
+is what left a DevZone custom board at **98 uA instead of ~1 uA** in System
+OFF. It is the single highest-consequence line in a custom board's DTS.
+
+### Where the SoC's power actually goes
+
+Nordic quote System ON IDLE at ~3 uA; we measure ~620 uA. So **~99.5% of the
+SoC draw is the work itself** — continuous PDM capture plus inference. No
+configuration switch touches that. Reducing it means changing the algorithm
+(e.g. a cheap voice-activity first stage gating the expensive model), not
+the build config. For scale, the mic alone is ~650 uA per its datasheet,
+comparable to the whole SoC, and sits outside this measurement on the
+VDD:IO follower.
+
+The two changes actually worth making are elsewhere: **gate the Hall
+sensor** (~5 mA continuous) and **feed nRF7002 VBAT directly** (deletes the
+EB II regulator and most of the 87 uA radio floor).
+
 ## Battery architecture (next phase)
 
 The nPM1300 has two 200 mA step-down BUCKs, two 50 mA LDO / 100 mA load
