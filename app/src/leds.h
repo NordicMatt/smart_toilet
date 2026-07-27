@@ -54,6 +54,16 @@ void leds_on_led1(void);
  */
 void leds_off_led1(void);
 
+#if defined(CONFIG_APP_LED_HEARTBEAT)
+/**
+ * @brief Start pulsing LED1 periodically as an "alive" indicator.
+ *
+ * Replaces holding LED1 on for the whole uptime. Wake-word detection blinks
+ * still take priority over the pulse.
+ */
+void leds_heartbeat_start(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

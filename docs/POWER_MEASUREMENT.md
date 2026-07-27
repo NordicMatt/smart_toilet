@@ -121,7 +121,13 @@ node, per the PLAN step above.
 - For the cleanest SoC-side figure rebuild with `CONFIG_SERIAL=n`,
   `CONFIG_CONSOLE=n`, `CONFIG_LOG=n`, `CONFIG_PRINTK=n`
   (`PLAN_low_power.md` step 50). Matters much less for the P10 measurement
-- DK LEDs draw current. LED1 is on whenever audio capture is running
+- DK LEDs draw current. LED1 used to be held on for the whole uptime, which
+  added a constant offset of roughly a couple of mA to every trace. As of
+  `CONFIG_APP_LED_HEARTBEAT` (on in `lowpower.conf`) it pulses 20 ms every
+  5 s instead, so expect a small periodic blip rather than a DC offset. LED0
+  still lights during the KWS window in `WW_GATED_KWS` mode, and a wake-word
+  detection blinks LED1 for a full second, so avoid talking near the unit
+  during a capture
 - The 5-min period is bench-only. Field is 12 h (`app/lowpower.conf`)
 - At a 300 s period the upload backstop collapses to ~15 min
   (`2 * period + CONNECT_WAIT_S`), so a wedged upload reboots quickly

@@ -180,6 +180,32 @@ config APP_CONN_DRAIN_PERIOD_S
 	  and CONFIG_MEMFAULT_EVENT_STORAGE_SIZE must be re-sized together
 	  with it. lowpower.conf sets all three as a matched set.
 
+config APP_LED_HEARTBEAT
+	bool "Pulse LED1 periodically instead of holding it on"
+	help
+	  By default LED1 is driven steady for the entire uptime to show that
+	  audio capture is live. A DK LED draws on the order of a couple of mA,
+	  which held continuously is a LARGER average draw than the whole
+	  connectivity duty cycle saves, and on the bench it adds a constant
+	  offset to every current trace. This replaces it with a short pulse:
+	  at the defaults (20 ms every 5 s) the duty cycle is 0.4%, cutting the
+	  LED's average contribution by roughly 250x while the board still
+	  visibly indicates it is running.
+	  Wake-word detection blinks keep priority over the pulse.
+
+config APP_LED_HEARTBEAT_INTERVAL_MS
+	int "LED1 heartbeat interval (ms)"
+	depends on APP_LED_HEARTBEAT
+	default 5000
+
+config APP_LED_HEARTBEAT_ON_MS
+	int "LED1 heartbeat pulse width (ms)"
+	depends on APP_LED_HEARTBEAT
+	default 20
+	help
+	  Keep this short; it is the only part of the period the LED is lit.
+	  Much below ~10 ms starts to be hard to see.
+
 config APP_POWER_MARKER
 	bool "Drive a GPIO high for the duration of each DRAIN window"
 	depends on APP_CONN_DUTY_CYCLE

@@ -230,11 +230,20 @@ static void audio_thread_fn(void *p1, void *p2, void *p3)
 		return;
 	}
 
-	/* Steady LED1 = audio sampling is live (mic is being read). Signals when
-	 * to start speaking; LED0 still blinks on each wake-word detection.
+	/* LED1 = audio sampling is live (mic is being read). Signals when to
+	 * start speaking; LED0 still blinks on each wake-word detection.
+	 * On battery-oriented builds this is a brief periodic pulse rather than
+	 * a steady light: held on, the LED's few mA outweigh everything the
+	 * connectivity duty cycle saves.
 	 */
+#if defined(CONFIG_APP_LED_HEARTBEAT)
+	leds_heartbeat_start();
+	LOG_INF("Audio sampling started (LED1 heartbeat every %d ms)",
+		CONFIG_APP_LED_HEARTBEAT_INTERVAL_MS);
+#else
 	leds_on_led1();
 	LOG_INF("Audio sampling started (LED1 on)");
+#endif
 
 	/* Arm the audio-loop liveness watchdog now that capture is running. Boot and
 	 * the network wait are deliberately excluded so they cannot trip it; a wedge
