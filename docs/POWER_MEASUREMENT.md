@@ -37,6 +37,60 @@ powered down. **Start with P10 on the EB II.**
 
 With two PPK2s you can take both at once; with one, do P10 first.
 
+## Powering the board, and where NOT to inject
+
+### The EB II supply chain
+
+Per Nordic's EB II docs, the radio has two feeds arriving over the
+expansion headers:
+
+- **VDD_5V** -> regulated down to **3.6 V on the EB II** -> nRF7002 VBAT net
+  (EB II power header P2 pin 1 is `VDD_VBAT`, "power to regulator for 3.6 V
+  VBAT supply")
+- **VDD_IO** (1.8 V default from the DK) -> nRF7002 IOVDD, valid 1.62-3.6 V
+
+So yes, the nRF7002 ultimately draws from 5V0. That does **not** make 5V0 a
+good injection point.
+
+### Do not drive 5 V into VBUS or a 5V0 net while USB is connected
+
+VBUS on this DK feeds the **nPM1300 PMIC**, which generates every downstream
+rail. Driving 5 V in while the USB host also drives it puts two sources in
+parallel with the PMIC's USB-detection logic between them. Best case one
+source wins and the measurement is meaningless because current arrives from
+a path you are not measuring. Worst case current is pushed back into the
+host port.
+
+There is also **no 5 V input that reaches the SoC**. The DK's external
+supply header is **P14**, rated **1.7 V to 3.6 V**. The P6-P10/P18 headers
+*output* 5 V to shields; they are not inputs.
+
+### Two problems even when the wiring is safe
+
+- **Brownout.** PPK2 source meter tops out near 1 A, is itself USB-powered,
+  and is boosting to reach 5 V. Wi-Fi TX draws fast high-current transients;
+  if the rail cannot follow them the device browns out. This project has
+  already lost time to exactly that failure mode (the Toilet #2 onboarding
+  USB brownout). Add bulk capacitance if you go this route.
+- **The debugger swamps the signal.** Powering the whole DK also measures
+  the J-Link OB interface MCU, LEDs, PMIC losses and external flash. The
+  interface MCU alone can draw tens of mA, far more than the difference
+  between "RPU off" and "RPU idle" that you are trying to resolve.
+
+### If you do want the regulator input included
+
+Break the `VDD_5V` net going *into the EB II* and put the PPK2 in series
+there. Do not backfeed a shared 5 V rail that the PMIC is also driving.
+
+> The EB II spec lists a "footprint for header pins to measure power
+> consumption", so **P10 and P4 may be unpopulated footprints**. Check
+> whether headers need soldering before planning around them.
+
+> Confidence note: the EB II topology above is documented explicitly. The
+> DK's internal 5V0 net -- specifically what sits between VBUS and it -- was
+> NOT verified against a schematic. If an isolation device is present the
+> contention concern may not apply.
+
 ## Setup
 
 ### nRF7002 EB II, VBAT (the important one)
