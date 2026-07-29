@@ -30,8 +30,8 @@ DARK = {
     "s1": "#3987e5", "s2": "#d95926",
 }
 
-W, H = 940, 560
-M = {"t": 96, "r": 34, "b": 92, "l": 84}
+W, H = 940, 600
+M = {"t": 96, "r": 34, "b": 132, "l": 84}
 LOG_MIN, LOG_MAX = 1, 8  # decades 10^1 .. 10^8
 
 
@@ -69,12 +69,11 @@ def build(agg, c):
 
     # Title block
     s.append(f'<text x="{M["l"]}" y="40" font-size="21" font-weight="600" '
-             f'fill="{c["text"]}">Wake-word confidence distribution</text>')
-    # Avoid the "greater-or-equal" glyph: it falls back to a missing-glyph box
-    # in renderers whose font stack lacks it (cairosvg did exactly this).
+             f'fill="{c["text"]}">Edge AI Observability Wake Word Data</text>')
+    # Factual only -- no interpretation. Avoid the "greater-or-equal" glyph:
+    # it falls back to a missing-glyph box in renderers lacking it.
     s.append(f'<text x="{M["l"]}" y="64" font-size="13.5" fill="{c["text2"]}">'
-             f'{human(total)} inferences across two toilets, 14 days &#183; '
-             f'{fires:,} in the top bin &#183; 1 in {total//fires:,}</text>')
+             f'{total:,} inferences &#183; 2 devices &#183; 14 days</text>')
 
     # Legend (always present for 2 series)
     lx = W - M["r"] - 232
@@ -110,12 +109,9 @@ def build(agg, c):
             s.append(f'<circle cx="{mx:.1f}" cy="{y:.1f}" r="6.5" fill="{col}" '
                      f'stroke="{c["surface"]}" stroke-width="2"/>')
 
-        # Selective direct labels: only the two bins that carry the story
-        if b in (0, 7):
-            top = min(ypos(series[0][1][b]), ypos(series[1][1][b]))
-            s.append(f'<text x="{cx:.1f}" y="{top-14:.1f}" font-size="11.5" '
-                     f'text-anchor="middle" font-weight="600" fill="{c["text"]}">'
-                     f'{human(series[0][1][b])} / {human(series[1][1][b])}</text>')
+    # Every bin gets its exact count. These go in per-series rows UNDER the
+    # axis rather than above each dot: in bin 0 the two values differ by only
+    # ~0.1 of a decade, so stacked labels would collide.
 
     # X axis labels
     edges = [f"{i/8:.3f}".rstrip("0").rstrip(".") for i in range(9)]
@@ -124,22 +120,23 @@ def build(agg, c):
         s.append(f'<text x="{cx:.1f}" y="{y0+ph+22}" font-size="11" text-anchor="middle" '
                  f'fill="{c["text2"]}">{edges[b]}&#8211;{edges[b+1]}</text>')
 
-    s.append(f'<text x="{x0+pw/2:.1f}" y="{y0+ph+50}" font-size="12.5" text-anchor="middle" '
+    # Per-series value rows (exact counts for every bin)
+    for i, (name, bins, col) in enumerate(series):
+        ry = y0 + ph + 46 + i * 20
+        s.append(f'<circle cx="{x0-30}" cy="{ry-4:.1f}" r="4.5" fill="{col}"/>')
+        s.append(f'<text x="{x0-20}" y="{ry:.1f}" font-size="10.5" '
+                 f'fill="{c["text2"]}">{name.replace("Toilet ", "T")}</text>')
+        for b in range(nbins):
+            cx = x0 + slot * (b + 0.5)
+            s.append(f'<text x="{cx:.1f}" y="{ry:.1f}" font-size="10.5" '
+                     f'text-anchor="middle" fill="{c["text2"]}">{bins[b]:,}</text>')
+
+    s.append(f'<text x="{x0+pw/2:.1f}" y="{y0+ph+96}" font-size="12.5" text-anchor="middle" '
              f'fill="{c["text2"]}">P(wake word) &#8212; model output, binned</text>')
     s.append(f'<text x="20" y="{y0+ph/2:.1f}" font-size="12.5" text-anchor="middle" '
              f'fill="{c["text2"]}" transform="rotate(-90 20 {y0+ph/2:.1f})">'
              f'Inferences (log scale)</text>')
 
-    # Annotation: the near-empty middle is the actual point of the chart, so
-    # anchor it just above the middle bins rather than floating in dead space.
-    midx = x0 + slot * 4
-    mid_top = min(ypos(series[0][1][b]) for b in range(1, 7))
-    s.append(f'<text x="{midx:.1f}" y="{mid_top-34:.1f}" font-size="11.5" text-anchor="middle" '
-             f'fill="{c["muted"]}" font-style="italic">'
-             f'only {sum(series[0][1][1:7])+sum(series[1][1][1:7]):,} land in between</text>')
-    s.append(f'<line x1="{x0+slot*1.05:.1f}" y1="{mid_top-24:.1f}" '
-             f'x2="{x0+slot*6.95:.1f}" y2="{mid_top-24:.1f}" '
-             f'stroke="{c["muted"]}" stroke-width="1" opacity="0.4"/>')
 
     s.append('</svg>')
     return "\n".join(s)
