@@ -30,6 +30,10 @@ import sys
 import cbor2
 
 PROBS_DISTRIBUTION_METRIC_ID = 3
+# Streak-length histogram (CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST,
+# add-on v2.3.0 / firmware 2.3.0+0): 4 bins over streak lengths [1,20], last
+# bin catches >= 20. Cumulative since boot, like the probability histogram.
+CLASS_STREAK_DIST_METRIC_ID = 9
 # Filenames look like: <serial>_edgeai-observability_YYYYMMDD-HHMMSS.bin
 NAME_RE = re.compile(r"(?P<serial>[0-9A-F]{16})_.*?_(?P<ts>\d{8}-\d{6})")
 
@@ -47,12 +51,16 @@ def decode_file(path):
         "num_inferences": obj.get("num_inferences"),
         "model": obj.get("model"),
         "bins": None,
+        "streak_bins": None,
     }
     for m in obj.get("metrics", []) or []:
+        rows = m.get("d") or []
+        if not rows:
+            continue
         if m.get("id") == PROBS_DISTRIBUTION_METRIC_ID:
-            rows = m.get("d") or []
-            if rows:
-                out["bins"] = list(rows[0])
+            out["bins"] = list(rows[0])
+        elif m.get("id") == CLASS_STREAK_DIST_METRIC_ID:
+            out["streak_bins"] = list(rows[0])
     return out
 
 
