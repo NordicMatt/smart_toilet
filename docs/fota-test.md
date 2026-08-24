@@ -65,7 +65,7 @@ are committed to the repo):
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
 SSID=$(tr -d '\n' < ~/.wifi_ssid)
 WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 --chdir ~/ncs/v3.4.0 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 -DEXTRA_CONF_FILE=$PWD/app/cloud.conf \
     -DZEPHYR_EXTRA_MODULES=~/edge_ai_addon/edge-ai \
@@ -93,7 +93,7 @@ build (NO flash — we want the signed binary only):
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
 SSID=$(tr -d '\n' < ~/.wifi_ssid)
 WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 --chdir ~/ncs/v3.4.0 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 -DEXTRA_CONF_FILE=$PWD/app/cloud.conf \
     -DZEPHYR_EXTRA_MODULES=~/edge_ai_addon/edge-ai \

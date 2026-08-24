@@ -222,7 +222,7 @@ Kconfig option is gated off until it's restored; see `app/Kconfig`.)
 
 ## Build & flash
 
-Built against an NCS **v3.3.1** tree with the nRF Edge AI add-on passed as extra
+Built against an NCS **v3.4.0** tree with the nRF Edge AI add-on passed as extra
 Zephyr modules, the Wi-Fi shield, the cloud config overlay, and three secrets kept
 out of the repo entirely (`~/.memfault_project_key`, `~/.wifi_ssid`,
 `~/.wifi_password` — none of these are committed; cloud.conf only enables
@@ -232,7 +232,7 @@ out of the repo entirely (`~/.memfault_project_key`, `~/.wifi_ssid`,
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
 SSID=$(tr -d '\n' < ~/.wifi_ssid)
 WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 --chdir ~/ncs/v3.3.1 -- \
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 --chdir ~/ncs/v3.4.0 -- \
   west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
     -DSHIELD=nrf7002eb2 \
     -DEXTRA_CONF_FILE=cloud.conf \
@@ -246,7 +246,7 @@ Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached; a
 `--erase` when the partition layout changed, e.g. switching from a TF-M /ns image):
 
 ```sh
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.1 -- \
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 -- \
   west flash -d build --dev-id <JLINK_SN>
 ```
 
