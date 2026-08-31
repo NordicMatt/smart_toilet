@@ -93,6 +93,15 @@ static int ww_loop(void)
 		audio_snap_feed(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 		audio_stats_update(audio_buffer, DMIC_SAMPLES_IN_BLOCK);
 
+#ifdef APP_BENCH_NO_INFERENCE
+		/* Bench-only (EXTRA_CFLAGS=-DAPP_BENCH_NO_INFERENCE): capture and
+		 * DSP run, inference is skipped, to measure what a perfect VAD
+		 * gate could save. The watchdog must still be fed on mic progress
+		 * or the 60 s liveness coredump fires. Never ship this. */
+		audio_watchdog_feed();
+		continue;
+#endif
+
 		err = ww_process(audio_buffer, DMIC_SAMPLES_IN_BLOCK, &ww_detected);
 		if (err == -EBUSY) {
 			/* More data is needed: the mic delivered audio and the model

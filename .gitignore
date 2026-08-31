@@ -19,3 +19,6 @@ Smart_Toilet_93499_wake_word/
 
 # Compiled-in nRF Cloud device private key (secret)
 app/certs/private-key.pem
+
+# Raw PPK2 captures are ~600 MB each; keep only downsampled CSVs in git
+measurements/**/raw/

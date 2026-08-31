@@ -188,6 +188,47 @@ The two changes actually worth making are elsewhere: **gate the Hall
 sensor** (~5 mA continuous) and **feed nRF7002 VBAT directly** (deletes the
 EB II regulator and most of the 87 uA radio floor).
 
+## SoC inference split (2026-08-31)
+
+Measured on a second nRF54LM20 DK (J-Link **1051814190**) + EB II, PPK2 at
+P14 ampere mode, no mic attached (the PDM peripheral clocks and DMAs
+regardless; per-block model compute is data-independent, so the floor is
+representative). Raw + downsampled traces in
+`measurements/2026-08-31-bench-soc/`. Note: this DK does not enumerate on
+USB until PPK2 DUT power is on.
+
+| Build | Floor (windows excluded) |
+| --- | --- |
+| `2.2.1-bench`, full pipeline | **0.648 mA** |
+| `2.2.1-bench-noinfer` (capture + DSP, no `ww_process()`) | **0.285 mA** |
+
+**Inference is 0.363 mA — 56 % of the SoC floor.** This reproduces July's
+baseline (0.648 vs 0.650) and finally splits it: the remaining 0.285 mA is
+PDM capture + DMA + HPF/AGC/stats + idle. The raw trace is bimodal (median
+0.305 mA under the full pipeline): the CPU already idles between per-block
+compute bursts.
+
+Consequence: an audio-level (VAD) gate that skips inference during silence
+has a measured ceiling of **~0.36 mA** — by far the largest SoC lever, and
+it confirms the July hypothesis quantitatively. A real gate keeps: cheap
+`block_peak` (already computed by the AGC) with hysteresis + a few-hundred-
+ms hangover, a pre-roll ring buffer to prime the model's ~1 s feature
+history on gate-open, and a vote/refractory reset in `wakeword.c`. It only
+pays off in quiet rooms — a bathroom fan can hold the gate open.
+
+The experiment is repeatable with
+`-DEXTRA_CFLAGS=-DAPP_BENCH_NO_INFERENCE` (guard in `main.c` ww_loop; it
+feeds the liveness watchdog on mic progress so the 60 s coredump does not
+fire; the image reports `2.2.1-bench-noinfer`).
+
+System view with the gate (quiet room, 12 h duty): SoC 0.65 -> ~0.29 mA,
+subtotal with radio ~0.77 -> ~0.41 mA (900 mAh: ~48 -> ~92 days). With the
+mic attached (~0.65 mA, must stay powered — the VAD listens through it),
+the mic becomes the single largest consumer: ~1.42 -> ~1.06 mA (~26 -> ~35
+days). Past that, the lever is a different microphone: parts with hardware
+acoustic-activity detection (e.g. TDK T5838-class, tens of µA until sound)
+would gate the mic *and* the inference in hardware.
+
 ## Battery architecture (next phase)
 
 The nPM1300 has two 200 mA step-down BUCKs, two 50 mA LDO / 100 mA load
@@ -230,3 +271,9 @@ Risks to design around:
 3. **Mic and external flash** — outside the P14 rail via the VDD:IO follower
 4. Verify the Lipo900 battery model completed; it was `csvReady: false` as of
    2026-06-26 (see `PROFILING.md`)
+5. **A real VAD gate's savings vs its detection cost** — the 0.36 mA figure
+   above is the perfect-gate ceiling; the implemented gate needs an A/B on
+   this rig for both power and wake-word reliability
+6. **Whole-toilet battery draw** — planned once a toilet is rewired to the
+   nPM1300 (profiling in progress 2026-08-31); the bench numbers here are
+   the budget to check it against
