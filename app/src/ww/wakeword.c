@@ -50,6 +50,16 @@ static nrf_edgeai_obsv_metric_t ww_obsv_pd_metric;
 /* uint32_t array gives the natural alignment the storage macro requires. */
 static uint32_t ww_obsv_pd_buf[(NRF_EDGEAI_OBSV_PD_STORAGE_BYTES(WW_OBSV_NUM_CLASSES)
 				+ sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST)
+/* Class streak distribution: how many consecutive inferences the wake-word
+ * class stays dominant. Kconfig only compiles the metric in; it still has to be
+ * created and registered here, exactly like the probability distribution
+ * (2.3.0 enabled the option but never registered it, so no CDR carried it).
+ */
+static nrf_edgeai_obsv_metric_t ww_obsv_csd_metric;
+static uint32_t ww_obsv_csd_buf[(NRF_EDGEAI_OBSV_CSD_STORAGE_BYTES(WW_OBSV_NUM_CLASSES)
+				 + sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+#endif
 
 /* Set up the probability-distribution metric and bind the Memfault CDR
  * transport. Called from ww_init() once the model is initialized (num_classes
@@ -83,6 +93,16 @@ static void ww_obsv_init(void)
 		return;
 	}
 
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST)
+	nrf_edgeai_obsv_metric_csd_create(&ww_obsv_csd_metric, ww_obsv_csd_buf, num_classes);
+
+	err = nrf_edgeai_obsv_register(&ww_obsv_ctx, &ww_obsv_csd_metric, NULL);
+	if (err) {
+		LOG_WRN("obsv streak metric register failed (err %d)", err);
+		return;
+	}
+#endif
+
 #if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
 	err = nrf_edgeai_obsv_memfault_init(&ww_obsv_ctx);
 	if (err) {
@@ -91,7 +111,8 @@ static void ww_obsv_init(void)
 	}
 #endif
 
-	LOG_INF("obsv: probability-distribution metric -> Memfault CDR (model %u)",
+	LOG_INF("obsv: probability-distribution%s metric -> Memfault CDR (model %u)",
+		IS_ENABLED(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST) ? " + class-streak" : "",
 		WW_OBSV_MODEL_ID);
 }
 #endif /* CONFIG_NRF_EDGEAI_OBSV */
