@@ -10,16 +10,17 @@
 #
 # deploy-release does NOT accept --org-token: it 401s with
 # "This resource requires log-in". It needs USER auth, i.e. --email plus the
-# user API key in ~/.memfault_manager_token passed as --password.
+# user API key in ~/claude/work/smart_toilet_secrets/memfault_user_api_key.txt
+# passed as --password.
 #
-# Credentials are read from the ~/.memfault_* dotfiles so no secret ever
+# Credentials are read from dotfiles / the secrets folder so no secret ever
 # lands on the command line or in shell history.
 set -euo pipefail
 
 VERSION="${1:?usage: $0 <version> <cohort>   e.g. 2.2.0+0 toilet-2-only}"
 COHORT="${2:?usage: $0 <version> <cohort>   e.g. 2.2.0+0 toilet-2-only}"
 
-CLI="${MEMFAULT_CLI:-$HOME/.memfault-venv/bin/memfault}"
+CLI="${MEMFAULT_CLI:-$HOME/.local/bin/memfault}"
 # The Memfault account is the Nordic work address, NOT the git/gmail identity.
 EMAIL="${MEMFAULT_EMAIL:-matthew.heins@nordicsemi.no}"
 
@@ -27,7 +28,7 @@ EMAIL="${MEMFAULT_EMAIL:-matthew.heins@nordicsemi.no}"
 
 ORG=$(tr -d '\n' < ~/.memfault_org_slug)
 PROJ=$(tr -d '\n' < ~/.memfault_project_slug)
-MTOKEN=$(tr -d '\n' < ~/.memfault_manager_token)
+MTOKEN=$(tr -d '\n' < ~/claude/work/smart_toilet_secrets/memfault_user_api_key.txt)
 
 echo "Deploying $VERSION to cohort '$COHORT' (org=$ORG project=$PROJ)"
 
