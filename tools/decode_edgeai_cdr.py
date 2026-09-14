@@ -46,6 +46,11 @@ PROBS_DISTRIBUTION_METRIC_ID = 3
 #     below-threshold complement (constant probability, gap-length streaks).
 # We always report the LAST row as the wake-word row.
 CLASS_STREAK_DIST_METRIC_ID = 9
+# Mel spectral descriptor (CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC,
+# firmware 2.3.3+): 8 rows x 8 bins over [0,1], cumulative since boot.
+MEL_SPECTRAL_DESC_METRIC_ID = 8
+MEL_SPECTRAL_ROWS = ["low_ratio", "mid_ratio", "high_ratio", "centroid",
+                     "spread", "entropy", "flatness", "contrast"]
 # Filenames look like: <serial>_edgeai-observability_YYYYMMDD-HHMMSS.bin
 NAME_RE = re.compile(r"(?P<serial>[0-9A-F]{16})_.*?_(?P<ts>\d{8}-\d{6})")
 
@@ -64,6 +69,7 @@ def decode_file(path):
         "model": obj.get("model"),
         "bins": None,
         "streak_bins": None,
+        "mel_spectral": None,
     }
     for m in obj.get("metrics", []) or []:
         rows = m.get("d") or []
@@ -75,6 +81,8 @@ def decode_file(path):
             out["streak_bins"] = list(rows[-1])
             if len(rows) > 1:
                 out["gap_streak_bins"] = list(rows[0])
+        elif m.get("id") == MEL_SPECTRAL_DESC_METRIC_ID:
+            out["mel_spectral"] = {name: list(r) for name, r in zip(MEL_SPECTRAL_ROWS, rows)}
     return out
 
 

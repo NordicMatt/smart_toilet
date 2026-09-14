@@ -45,6 +45,9 @@ static nrf_edgeai_t *ww_model;
  */
 #define WW_MODEL_NUM_CLASSES 1
 #define WW_OBSV_NUM_CLASSES 2
+/* Upper bound on the mel vector length fed to the input-side metrics (the
+ * abracadabra/okay_nordic models extract 40 mel bins per frame). */
+#define WW_OBSV_MEL_MAX 64
 
 /* On-wire model identity carried in every snapshot, so the cloud can tell which
  * model produced a given probability distribution (A/B across models). This is
@@ -62,6 +65,18 @@ static nrf_edgeai_obsv_metric_t ww_obsv_pd_metric;
 /* uint32_t array gives the natural alignment the storage macro requires. */
 static uint32_t ww_obsv_pd_buf[(NRF_EDGEAI_OBSV_PD_STORAGE_BYTES(WW_OBSV_NUM_CLASSES)
 				+ sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
+/* Mel spectral descriptor: eight scale-invariant shape statistics of each
+ * frame's 40-bin mel vector (band ratios, centroid, spread, entropy, flatness,
+ * contrast), histogrammed. Input-side observability: shows whether what the
+ * model hears looks like speech, clipped audio, or far-field mush, which the
+ * output-side histograms cannot tell apart. Storage is independent of the
+ * feature count. */
+static nrf_edgeai_obsv_metric_t ww_obsv_msd_metric;
+static uint32_t ww_obsv_msd_buf[(NRF_EDGEAI_OBSV_MSD_STORAGE_BYTES(0)
+				 + sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+#endif
+
 #if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST)
 /* Class streak distribution: how many consecutive inferences the wake-word
  * class stays dominant. Kconfig only compiles the metric in; it still has to be
@@ -105,6 +120,17 @@ static void ww_obsv_init(void)
 		LOG_WRN("obsv metric register failed (err %d)", err);
 		return;
 	}
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
+	nrf_edgeai_obsv_metric_msd_create(&ww_obsv_msd_metric, ww_obsv_msd_buf,
+					  ww_model->p_dsp->features.overall_num);
+
+	err = nrf_edgeai_obsv_register(&ww_obsv_ctx, &ww_obsv_msd_metric, NULL);
+	if (err) {
+		LOG_WRN("obsv mel metric register failed (err %d)", err);
+		return;
+	}
+#endif
 
 #if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST)
 	nrf_edgeai_obsv_metric_csd_create(&ww_obsv_csd_metric, ww_obsv_csd_buf, num_classes);
@@ -186,6 +212,32 @@ static bool ww_postprocess(void)
 	 * Thread-safe (takes ctx->lock), so it cannot race the auto-collect
 	 * encode running on the system workqueue. Bins the wake-word confidence
 	 * into the per-class histogram shipped to Memfault as a CDR. */
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
+	/* Feed the frame's mel vector first: feature updates do not advance the
+	 * inference counter, the probability update below does. The runtime
+	 * keeps the extracted features as int16 (see the generated model's
+	 * EXTRACTED_FEATURE type); convert to float and lift by the frame's
+	 * minimum so the vector is non-negative whether the mel values are
+	 * linear power (min ~0, no-op) or log-scaled (becomes "dB above the
+	 * frame floor"). The descriptor's shape statistics are ratios and
+	 * index-weighted moments, which stay meaningful in both cases; it clamps
+	 * negatives to zero, which would garble a log-mel frame. */
+	{
+		const nrf_edgeai_dsp_feature_extraction_t *fx = &ww_model->p_dsp->features;
+		const uint16_t n = MIN(fx->overall_num, WW_OBSV_MEL_MAX);
+		const int16_t *mel = fx->buffer.p_i16;
+		float feats[WW_OBSV_MEL_MAX];
+		int16_t lo = mel[0];
+
+		for (uint16_t i = 1; i < n; i++) {
+			lo = MIN(lo, mel[i]);
+		}
+		for (uint16_t i = 0; i < n; i++) {
+			feats[i] = (float)(mel[i] - lo);
+		}
+		nrf_edgeai_obsv_update_features(&ww_obsv_ctx, feats, n);
+	}
+#endif
 	{
 		const float obsv_probs[WW_OBSV_NUM_CLASSES] = { ww_threshold, class_probability };
 
