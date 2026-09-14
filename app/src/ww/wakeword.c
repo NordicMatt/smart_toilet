@@ -28,11 +28,23 @@ static nrf_edgeai_t *ww_model;
 
 #if defined(CONFIG_NRF_EDGEAI_OBSV)
 /* The abracadabra/okay_nordic wake-word models are single-output (one
- * probability = P(wakeword)); see MODEL_OUTPUTS_NUM in the generated model. The
- * observability storage is sized for this at compile time and cross-checked
- * against the model's runtime num_classes in ww_obsv_init().
+ * probability = P(wakeword)); see MODEL_OUTPUTS_NUM in the generated model.
+ * That is cross-checked against the model's runtime num_classes in
+ * ww_obsv_init().
+ *
+ * The observability metrics are fed a TWO-class vector, { threshold, p }.
+ * Reason: the class-streak metric records a streak when the argmax class
+ * CHANGES, and a single-output model never changes class, so on 2.3.1 every
+ * streak bin stayed at zero forever. With { threshold, p } the argmax flips
+ * exactly when p crosses CONFIG_WW_PROBABILITY_THRESHOLD, i.e. the same
+ * per-frame decision ww_postprocess() votes on. Row 1 of every metric is the
+ * wake-word row: its probability histogram is unchanged from 2.3.x, and its
+ * streak histogram now counts consecutive above-threshold frames. Row 0 is
+ * the below-threshold complement (its probability histogram is a constant).
+ * tools/decode_edgeai_cdr.py reads row 1 for two-row recordings.
  */
-#define WW_OBSV_NUM_CLASSES 1
+#define WW_MODEL_NUM_CLASSES 1
+#define WW_OBSV_NUM_CLASSES 2
 
 /* On-wire model identity carried in every snapshot, so the cloud can tell which
  * model produced a given probability distribution (A/B across models). This is
@@ -68,14 +80,15 @@ static uint32_t ww_obsv_csd_buf[(NRF_EDGEAI_OBSV_CSD_STORAGE_BYTES(WW_OBSV_NUM_C
  */
 static void ww_obsv_init(void)
 {
-	const uint16_t num_classes = ww_model->decoded_output.classif.num_classes;
+	const uint16_t num_classes = WW_OBSV_NUM_CLASSES;
 
-	__ASSERT_NO_MSG(num_classes == WW_OBSV_NUM_CLASSES);
+	__ASSERT_NO_MSG(ww_model->decoded_output.classif.num_classes == WW_MODEL_NUM_CLASSES);
 
+	/* version 2: two-row { threshold, p } metrics (see WW_OBSV_NUM_CLASSES). */
 	const nrf_edgeai_obsv_model_info_t model = {
 		.model_id = WW_OBSV_MODEL_ID,
 		.num_classes = num_classes,
-		.version = 1,
+		.version = 2,
 	};
 
 	int err = nrf_edgeai_obsv_init(&ww_obsv_ctx, &model);
@@ -173,8 +186,11 @@ static bool ww_postprocess(void)
 	 * Thread-safe (takes ctx->lock), so it cannot race the auto-collect
 	 * encode running on the system workqueue. Bins the wake-word confidence
 	 * into the per-class histogram shipped to Memfault as a CDR. */
-	nrf_edgeai_obsv_update_probs(&ww_obsv_ctx,
-				     ww_model->decoded_output.classif.probabilities.p_f32);
+	{
+		const float obsv_probs[WW_OBSV_NUM_CLASSES] = { ww_threshold, class_probability };
+
+		nrf_edgeai_obsv_update_probs(&ww_obsv_ctx, obsv_probs);
+	}
 #endif
 
 	const bool oldest_entry = (bool)(ww_history & BIT(CONFIG_WW_HISTORY_SIZE - 1));

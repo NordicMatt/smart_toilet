@@ -30,9 +30,21 @@ import sys
 import cbor2
 
 PROBS_DISTRIBUTION_METRIC_ID = 3
-# Streak-length histogram (CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST,
-# add-on v2.3.0 / firmware 2.3.0+0): 4 bins over streak lengths [1,20], last
-# bin catches >= 20. Cumulative since boot, like the probability histogram.
+# Streak-length histogram (CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST).
+# Registered from firmware 2.3.1+0 (2.3.0 enabled the Kconfig but never
+# registered the metric, so its CDRs carry only id 3). Cumulative since boot,
+# like the probability histogram.
+#
+# Row layout depends on the firmware's obsv model version:
+#   version 1 (2.3.1): one row, the raw single-output model. The streak metric
+#     records a streak only when the argmax class CHANGES, and a one-class
+#     model never changes class, so every streak bin is zero. Useless.
+#   version 2 (2.3.2+): two rows, fed { threshold, p }. Row 1 is the wake-word
+#     row: its probability histogram is the same as before, and its streak
+#     histogram counts consecutive frames with p > CONFIG_WW_PROBABILITY_THRESHOLD
+#     (10 bins: lengths 1..9 exactly, last bin >= 10). Row 0 is the
+#     below-threshold complement (constant probability, gap-length streaks).
+# We always report the LAST row as the wake-word row.
 CLASS_STREAK_DIST_METRIC_ID = 9
 # Filenames look like: <serial>_edgeai-observability_YYYYMMDD-HHMMSS.bin
 NAME_RE = re.compile(r"(?P<serial>[0-9A-F]{16})_.*?_(?P<ts>\d{8}-\d{6})")
@@ -58,9 +70,11 @@ def decode_file(path):
         if not rows:
             continue
         if m.get("id") == PROBS_DISTRIBUTION_METRIC_ID:
-            out["bins"] = list(rows[0])
+            out["bins"] = list(rows[-1])
         elif m.get("id") == CLASS_STREAK_DIST_METRIC_ID:
-            out["streak_bins"] = list(rows[0])
+            out["streak_bins"] = list(rows[-1])
+            if len(rows) > 1:
+                out["gap_streak_bins"] = list(rows[0])
     return out
 
 
@@ -115,6 +129,9 @@ def main():
               f"{rs[0]['timestamp'][:10]} .. {rs[-1]['timestamp'][:10]}")
         print(f"  latest cumulative inferences: {rs[-1]['num_inferences']:,}")
         print(f"  latest bins: {rs[-1]['bins']}")
+        if rs[-1].get("streak_bins") is not None:
+            print(f"  latest streak bins: {rs[-1]['streak_bins']}"
+                  f" (obsv model version {(rs[-1].get('model') or {}).get('version')})")
 
     if args.json:
         with open(args.json, "w") as f:
