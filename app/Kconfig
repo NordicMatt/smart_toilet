@@ -75,6 +75,48 @@ config WW_COUNT_THRESHOLD
 	  Number of predictions above threshold in predictions history required to confirm wakeword
 	  detection.
 
+config WW_NEAR_MISS_FLOOR
+	int "Near-miss floor probability, in 1/1000"
+	range 0 1000
+	default 300
+	help
+	  A run of inference frames at or above this probability that ends
+	  without a confirmed detection is a "near miss": the model half-heard
+	  something. Its peak probability and the audio level around it are
+	  reported as ww_near_miss_* heartbeat metrics, and it arms the retry
+	  assist (WW_RETRY_THRESHOLD).
+
+config WW_NEAR_MISS_GAP_FRAMES
+	int "Frames below the near-miss floor that end a run"
+	range 1 100
+	default 10
+	help
+	  A near-miss run ends once the probability has stayed below
+	  WW_NEAR_MISS_FLOOR for this many consecutive frames (~30 ms each).
+
+config WW_RETRY_THRESHOLD
+	int "Probability bar while the retry assist is armed, in 1/1000"
+	range 0 1000
+	default 600
+	help
+	  After a near miss the per-frame bar drops from WW_PROBABILITY_THRESHOLD
+	  to this value for WW_RETRY_WINDOW_MS, so a repeated utterance is
+	  accepted. The vote count (WW_COUNT_THRESHOLD) is unchanged. Set equal
+	  to WW_PROBABILITY_THRESHOLD to disable the assist.
+
+config WW_RETRY_WINDOW_MS
+	int "Retry assist duration after a near miss (ms)"
+	range 0 30000
+	default 3000
+
+config WW_MISS_BUTTON_WINDOW_MS
+	int "Button press within this many ms of a near miss counts as a confirmed miss"
+	range 0 120000
+	default 15000
+	help
+	  A failsafe-button press this soon after a near miss is taken as the
+	  user giving up on voice: reported as ww_miss_then_button_count.
+
 config APP_PDM_GAIN_DB
 	int "PDM microphone digital gain (dB)"
 	range -20 20

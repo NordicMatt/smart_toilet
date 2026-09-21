@@ -53,6 +53,28 @@ MEMFAULT_METRICS_KEY_DEFINE(flush_jam_count, kMemfaultMetricType_Unsigned)
  * event counter like flush_count. */
 MEMFAULT_METRICS_KEY_DEFINE(button_press_count, kMemfaultMetricType_Unsigned)
 
+/* False-negative diagnostics (2.3.7). A "near miss" is a run of inference
+ * frames at or above CONFIG_WW_NEAR_MISS_FLOOR that ended without a detection:
+ * the model half-heard something. Per interval:
+ *   ww_near_miss_count       - number of near-miss runs
+ *   ww_near_miss_peak_pct    - highest peak probability among them (0-100)
+ *   ww_near_miss_level_dbfs  - loudest 1 s audio peak around the latest one,
+ *                              deci-dBFS (quiet = far-field, 0 = clipping)
+ *   ww_near_miss_floor_dbfs  - RMS of the second before it, deci-dBFS (the
+ *                              background the attempt had to beat)
+ *   ww_miss_then_button_count - button presses within
+ *                              CONFIG_WW_MISS_BUTTON_WINDOW_MS of a near miss:
+ *                              the user gave up on voice = confirmed miss
+ *   ww_retry_detections      - detections accepted at the lowered retry bar
+ *                              (CONFIG_WW_RETRY_THRESHOLD) after a near miss;
+ *                              a subset of ww_detections */
+MEMFAULT_METRICS_KEY_DEFINE(ww_near_miss_count, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(ww_near_miss_peak_pct, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(ww_near_miss_level_dbfs, kMemfaultMetricType_Signed)
+MEMFAULT_METRICS_KEY_DEFINE(ww_near_miss_floor_dbfs, kMemfaultMetricType_Signed)
+MEMFAULT_METRICS_KEY_DEFINE(ww_miss_then_button_count, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(ww_retry_detections, kMemfaultMetricType_Unsigned)
+
 /* Tier-0 forced Wi-Fi reconnects during the interval (uploads stalled while
  * nominally connected -> stall monitor submitted a re-associate). A burst in
  * one interval marks a network outage window (e.g. overnight Nest maintenance)

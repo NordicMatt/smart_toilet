@@ -34,6 +34,22 @@ void audio_telemetry_prob(float prob);
 /** @brief Report a confirmed wake-word detection. */
 void audio_telemetry_detection(void);
 
+/** @brief Report a detection accepted at the lowered retry bar. */
+void audio_telemetry_retry_detection(void);
+
+/**
+ * @brief Report a near miss: a probability run that ended without a detection.
+ *
+ * @param peak_pct Peak probability of the run, percent (0-100).
+ */
+void audio_telemetry_near_miss(uint32_t peak_pct);
+
+/**
+ * @brief Note a failsafe-button press (ISR-safe). Counted as a confirmed miss
+ *        if it lands within CONFIG_WW_MISS_BUTTON_WINDOW_MS of a near miss.
+ */
+void audio_telemetry_button_press(void);
+
 #else /* CONFIG_MEMFAULT */
 
 static inline void audio_telemetry_levels(float peak_db, float rms_db, uint32_t clipped)
@@ -43,6 +59,15 @@ static inline void audio_telemetry_prob(float prob)
 {
 }
 static inline void audio_telemetry_detection(void)
+{
+}
+static inline void audio_telemetry_retry_detection(void)
+{
+}
+static inline void audio_telemetry_near_miss(uint32_t peak_pct)
+{
+}
+static inline void audio_telemetry_button_press(void)
 {
 }
 

@@ -34,10 +34,33 @@ static atomic_t prob_max_pct = ATOMIC_INIT(0);          /* max probability, % */
 static atomic_t prob_sum_pct = ATOMIC_INIT(0);
 static atomic_t infer_count = ATOMIC_INIT(0);
 
+/* Near-miss context. The audio-stats module reports levels once per second;
+ * keep the last two seconds so a near miss (typically well under a second)
+ * can be tagged with the loudest peak around it and the RMS of the second
+ * before it (the background the attempt had to beat). Window aggregates:
+ * highest near-miss peak probability, and the level/floor of the loudest
+ * near miss. */
+static atomic_t sec_peak_dx10[2] = { ATOMIC_INIT(INT32_MIN), ATOMIC_INIT(INT32_MIN) };
+static atomic_t sec_rms_dx10[2] = { ATOMIC_INIT(INT32_MAX), ATOMIC_INIT(INT32_MAX) };
+static atomic_t near_miss_peak_pct = ATOMIC_INIT(0);
+static atomic_t near_miss_level_dx10 = ATOMIC_INIT(INT32_MIN);
+static atomic_t near_miss_floor_dx10 = ATOMIC_INIT(INT32_MAX);
+/* Uptime (ms, 32-bit) of the latest near miss, 0 = none yet. Read from the
+ * button GPIO ISR; presses that qualify are staged in miss_button_pending and
+ * drained at heartbeat time (memfault_metrics_* is not ISR-safe). */
+static atomic_t near_miss_uptime_ms = ATOMIC_INIT(0);
+static atomic_t miss_button_pending = ATOMIC_INIT(0);
+
 void audio_telemetry_levels(float peak_db, float rms_db, uint32_t clipped)
 {
 	const int32_t peak = (int32_t)(peak_db * 10.f);
 	const int32_t floor = (int32_t)(rms_db * 10.f);
+
+	/* Shift the 2 s level history: [0] = this second, [1] = the one before. */
+	atomic_set(&sec_peak_dx10[1], atomic_get(&sec_peak_dx10[0]));
+	atomic_set(&sec_rms_dx10[1], atomic_get(&sec_rms_dx10[0]));
+	atomic_set(&sec_peak_dx10[0], peak);
+	atomic_set(&sec_rms_dx10[0], floor);
 
 	if (peak > atomic_get(&peak_db_dx10)) {
 		atomic_set(&peak_db_dx10, peak);
@@ -66,6 +89,44 @@ void audio_telemetry_prob(float prob)
 void audio_telemetry_detection(void)
 {
 	memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(ww_detections), 1);
+}
+
+void audio_telemetry_retry_detection(void)
+{
+	memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(ww_retry_detections), 1);
+}
+
+void audio_telemetry_near_miss(uint32_t peak_pct)
+{
+	const int32_t level = MAX(atomic_get(&sec_peak_dx10[0]), atomic_get(&sec_peak_dx10[1]));
+	const int32_t floor = atomic_get(&sec_rms_dx10[1]);
+
+	memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(ww_near_miss_count), 1);
+
+	if ((int32_t)peak_pct > atomic_get(&near_miss_peak_pct)) {
+		atomic_set(&near_miss_peak_pct, (int32_t)peak_pct);
+	}
+	/* Level and floor follow the loudest near miss of the window, so the pair
+	 * describes one attempt rather than mixing two. */
+	if (level > atomic_get(&near_miss_level_dx10)) {
+		atomic_set(&near_miss_level_dx10, level);
+		atomic_set(&near_miss_floor_dx10, floor);
+	}
+
+	/* k_uptime_get_32() wraps after 49 days; a wrap makes at most one
+	 * button press mis-attribute, which is acceptable for a diagnostic. */
+	atomic_set(&near_miss_uptime_ms, MAX(k_uptime_get_32(), 1));
+}
+
+void audio_telemetry_button_press(void)
+{
+	const uint32_t miss = (uint32_t)atomic_get(&near_miss_uptime_ms);
+
+	if (miss != 0 && (k_uptime_get_32() - miss) <= CONFIG_WW_MISS_BUTTON_WINDOW_MS) {
+		atomic_inc(&miss_button_pending);
+		/* One press per near miss: a second press is a jam, not a miss. */
+		atomic_set(&near_miss_uptime_ms, 0);
+	}
 }
 
 /* Memfault calls this just before serializing each heartbeat. Publish the
@@ -105,5 +166,28 @@ void memfault_metrics_heartbeat_collect_data(void)
 	if (pcount > 0) {
 		memfault_metrics_heartbeat_set_unsigned(MEMFAULT_METRICS_KEY(ww_prob_mean_pct),
 							(uint32_t)(psum / pcount));
+	}
+
+	/* Near-miss diagnostics: gauges only when a near miss occurred, so an
+	 * absent value means "no near miss", not "quiet". */
+	const int32_t nm_peak = atomic_set(&near_miss_peak_pct, 0);
+	const int32_t nm_level = atomic_set(&near_miss_level_dx10, INT32_MIN);
+	const int32_t nm_floor = atomic_set(&near_miss_floor_dx10, INT32_MAX);
+
+	if (nm_peak > 0) {
+		memfault_metrics_heartbeat_set_unsigned(MEMFAULT_METRICS_KEY(ww_near_miss_peak_pct),
+							(uint32_t)nm_peak);
+	}
+	if (nm_level != INT32_MIN) {
+		memfault_metrics_heartbeat_set_signed(MEMFAULT_METRICS_KEY(ww_near_miss_level_dbfs),
+						      nm_level);
+	}
+	if (nm_floor != INT32_MAX) {
+		memfault_metrics_heartbeat_set_signed(MEMFAULT_METRICS_KEY(ww_near_miss_floor_dbfs),
+						      nm_floor);
+	}
+	while (atomic_get(&miss_button_pending) > 0) {
+		atomic_dec(&miss_button_pending);
+		memfault_metrics_heartbeat_add(MEMFAULT_METRICS_KEY(ww_miss_then_button_count), 1);
 	}
 }

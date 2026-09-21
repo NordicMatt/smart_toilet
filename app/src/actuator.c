@@ -15,6 +15,7 @@
 
 #include "actuator.h"
 #include "cloud.h"
+#include "audio_telemetry.h"
 
 LOG_MODULE_REGISTER(actuator);
 
@@ -206,6 +207,7 @@ static void button_pressed(const struct device *dev, struct gpio_callback *cb, u
 
 	LOG_INF("Failsafe switch pressed");
 	cloud_report_button_press();
+	audio_telemetry_button_press();
 	actuator_flush();
 }
 

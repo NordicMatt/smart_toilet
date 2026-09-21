@@ -191,18 +191,90 @@ int ww_init(void)
  */
 #define WW_REFRACTORY_FRAMES 33
 
+/* Retry assist window in inference frames (~30 ms each). */
+#define WW_RETRY_FRAMES (CONFIG_WW_RETRY_WINDOW_MS / 30)
+
+/* Near-miss tracking and retry assist (2.3.7).
+ *
+ * Field data (CDR exports 5-7): a real utterance drives the model to 0.98-0.99
+ * for 7+ frames; a failed attempt leaves a handful of frames at 0.125-0.5 and
+ * never approaches the bar. Those attempts are invisible to the vote and to
+ * the per-heartbeat peak. This tracks them as "near-miss runs": frames at or
+ * above CONFIG_WW_NEAR_MISS_FLOOR, ended by CONFIG_WW_NEAR_MISS_GAP_FRAMES
+ * consecutive frames below it. A run that ends without a detection is
+ * reported (peak probability + surrounding audio level, see audio_telemetry)
+ * and arms the retry assist: for CONFIG_WW_RETRY_WINDOW_MS the per-frame bar
+ * drops to CONFIG_WW_RETRY_THRESHOLD so the user's repeat is accepted. The
+ * assist arms only when the run ENDS, so it never lowers the bar for the
+ * utterance that triggered it (that would just be a lower bar).
+ *
+ * Returns true if a near-miss run just ended.
+ */
+static bool ww_track_near_miss(float p, bool fired, bool suppressed)
+{
+	static bool in_run;
+	static float run_peak;
+	static uint32_t below_frames;
+
+	const float floor = CONFIG_WW_NEAR_MISS_FLOOR / 1000.f;
+
+	if (fired || suppressed) {
+		/* A detection (or its refractory tail) is a hit, not a miss. */
+		in_run = false;
+		run_peak = 0.f;
+		below_frames = 0;
+		return false;
+	}
+
+	if (p >= floor) {
+		in_run = true;
+		run_peak = MAX(run_peak, p);
+		below_frames = 0;
+		return false;
+	}
+
+	if (!in_run) {
+		return false;
+	}
+
+	if (++below_frames < CONFIG_WW_NEAR_MISS_GAP_FRAMES) {
+		return false;
+	}
+
+	/* Run over with no detection. */
+	const uint32_t peak_pct = (uint32_t)(run_peak * 100.f);
+
+	in_run = false;
+	run_peak = 0.f;
+	below_frames = 0;
+
+	LOG_INF("ww: near miss, peak %u%%", peak_pct);
+	audio_telemetry_near_miss(peak_pct);
+
+	return true;
+}
+
 static bool ww_postprocess(void)
 {
 	static uint32_t ww_count;
 	static uint32_t ww_history;
 	static uint32_t refractory;
+	static uint32_t retry_frames;
 
 	const float ww_threshold = CONFIG_WW_PROBABILITY_THRESHOLD / 1000.f;
+	const float retry_threshold = CONFIG_WW_RETRY_THRESHOLD / 1000.f;
+	const bool retry_armed = retry_frames > 0;
+
+	if (retry_armed) {
+		retry_frames--;
+	}
 
 	const uint16_t predicted_class = ww_model->decoded_output.classif.predicted_class;
 	const float class_probability =
 		ww_model->decoded_output.classif.probabilities.p_f32[predicted_class];
-	const bool ww_detected = class_probability > ww_threshold;
+	/* The retry bar applies for CONFIG_WW_RETRY_WINDOW_MS after a near miss. */
+	const bool ww_detected =
+		class_probability > (retry_armed ? retry_threshold : ww_threshold);
 
 	/* Remote diagnosis: track the peak probability per Memfault heartbeat. */
 	audio_telemetry_prob(class_probability);
@@ -282,6 +354,7 @@ static bool ww_postprocess(void)
 			ww_count = 0;
 			ww_history = 0;
 		}
+		ww_track_near_miss(class_probability, false, true);
 		return false;
 	}
 
@@ -289,8 +362,19 @@ static bool ww_postprocess(void)
 		ww_count = 0;
 		ww_history = 0;
 		refractory = WW_REFRACTORY_FRAMES;
+		ww_track_near_miss(class_probability, true, false);
+
+		if (retry_armed) {
+			LOG_INF("ww: detection accepted at retry bar %.2f", (double)retry_threshold);
+			audio_telemetry_retry_detection();
+			retry_frames = 0;
+		}
 
 		return true;
+	}
+
+	if (ww_track_near_miss(class_probability, false, false)) {
+		retry_frames = WW_RETRY_FRAMES;
 	}
 
 	return false;
