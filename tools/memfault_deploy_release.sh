@@ -21,6 +21,7 @@ VERSION="${1:?usage: $0 <version> <cohort>   e.g. 2.2.0+0 toilet-2-only}"
 COHORT="${2:?usage: $0 <version> <cohort>   e.g. 2.2.0+0 toilet-2-only}"
 
 CLI="${MEMFAULT_CLI:-$HOME/.local/bin/memfault}"
+[ -x "$CLI" ] || CLI="$HOME/.memfault-venv/bin/memfault"
 # The Memfault account is the Nordic work address, NOT the git/gmail identity.
 EMAIL="${MEMFAULT_EMAIL:-matthew.heins@nordicsemi.no}"
 
@@ -28,7 +29,11 @@ EMAIL="${MEMFAULT_EMAIL:-matthew.heins@nordicsemi.no}"
 
 ORG=$(tr -d '\n' < ~/.memfault_org_slug)
 PROJ=$(tr -d '\n' < ~/.memfault_project_slug)
-MTOKEN=$(tr -d '\n' < ~/claude/work/smart_toilet_secrets/memfault_user_api_key.txt)
+# Manager-role user API key: the secrets folder on the laptop, or the
+# ~/.memfault_manager_token dotfile on the dev box (see the credentials memory).
+MTOKEN_FILE=~/claude/work/smart_toilet_secrets/memfault_user_api_key.txt
+[ -r "$MTOKEN_FILE" ] || MTOKEN_FILE=~/.memfault_manager_token
+MTOKEN=$(tr -d '\n' < "$MTOKEN_FILE")
 
 echo "Deploying $VERSION to cohort '$COHORT' (org=$ORG project=$PROJ)"
 
