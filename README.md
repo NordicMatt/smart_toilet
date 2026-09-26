@@ -252,6 +252,32 @@ nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 -- \
 
 Footprint: FLASH ~45 %, RAM ~85 % of the nRF54LM20B.
 
+### Fleet (deployed) build
+
+The images on the toilets are the low-power variant, not the plain recipe above:
+same command with `-d build_lp` and `-DEXTRA_CONF_FILE="cloud.conf;lowpower.conf"`
+(6 h heartbeat, 12 h DRAIN window). Three things that have to line up, learned the
+hard way on 2026-09-26 when building 2.3.8 on a machine that had only ever built 2.2.1:
+
+- **Install the toolchain under the SDK's own version name**:
+  `nrfutil sdk-manager toolchain install --ncs-version v3.4.0`, then launch with
+  `--ncs-version v3.4.0 --chdir ~/ncs/v3.4.0`. Only names printed by
+  `nrfutil sdk-manager toolchain list` work; a missing one fails with "Selected
+  toolchain was not found". (v3.4.0 and v3.4.0-rc2 resolve to the same bundle,
+  fbf7391cab, so an rc2-only install builds identical binaries, but keep the
+  release name so the recipe matches the tree.)
+- **The Edge AI add-on checkout must be at v2.3.0** (`git -C <addon>/edge-ai checkout
+  v2.3.0`). Firmware 2.3.0+ registers the class-streak observability metric; an
+  older add-on makes Kconfig abort on the undefined
+  `NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST` symbols.
+- **The OTA payload is `app.signed.bin` inside `build_lp/dfu_application.zip`**
+  (`unzip -o build_lp/dfu_application.zip app.signed.bin -d build_lp/`), byte-identical
+  to `build_lp/app/zephyr/zephyr.signed.bin`. Check the version string in the binary,
+  not the build log: `strings build_lp/app.signed.bin | grep Booting`.
+
+Fleet-build footprint (2.3.8): FLASH 40 %, RAM 97.5 %. There is ~13 KB of RAM left;
+see PLAN_low_power.md for why the heartbeat interval is coupled to that number.
+
 ### Output
 
 With the EB II shield the application console (logs **and** any shell) is on **VCOM0**
