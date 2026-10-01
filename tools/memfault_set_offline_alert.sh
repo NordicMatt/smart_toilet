@@ -20,8 +20,12 @@
 #   - the delay must be a whole multiple of 15 min (900 s)
 set -euo pipefail
 
-SECONDS_THRESHOLD="${1:?usage: $0 <seconds> [alert_id]   e.g. 108000}"
+SECONDS_THRESHOLD="${1:?usage: $0 <seconds> [alert_id] [devices_expr]   e.g. 86400}"
 ALERT_ID="${2:-21563}"
+# Device scope. `true` = every device in the project (the default). Anything
+# else is a filter expression in the same dialect device_search uses, e.g.
+#   "cohort != 'bench'"   to keep bench hardware out of fleet paging.
+DEVICES_EXPR="${3:-true}"
 
 if (( SECONDS_THRESHOLD % 900 != 0 )); then
 	echo "Threshold must be a multiple of 900 s (15 min); got $SECONDS_THRESHOLD" >&2
@@ -34,23 +38,26 @@ TOKEN=$(tr -d '\n' < ~/.memfault_org_token)
 
 HOURS=$(python3 -c "print(f'{$SECONDS_THRESHOLD/3600:g}')")
 
-BODY=$(python3 - "$SECONDS_THRESHOLD" "$HOURS" <<'PY'
+BODY=$(python3 - "$SECONDS_THRESHOLD" "$HOURS" "$DEVICES_EXPR" <<'PY'
 import json, sys
-secs, hours = int(sys.argv[1]), sys.argv[2]
-print(json.dumps({
+secs, hours, expr = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+scope = "" if expr == "true" else f" Scope: {expr}."
+body = {
     "title": f"Toilet offline > {hours} h (duty-cycle aware)",
     "description": (
         f"A smart-toilet unit has not checked in for over {hours} hours. "
         "Threshold is sized for the low-power duty-cycled connectivity: a "
         "healthy sleeping device is deliberately silent for one full DRAIN "
         "period. Do not lower this below CONFIG_APP_CONN_DRAIN_PERIOD_S or "
-        "every sleep window pages the whole team."
+        "every sleep window pages the whole team." + scope
     ),
     "incident_start_delay_seconds": secs,
     "notify_on_incident_start": True,
     "notify_on_incident_end": True,
     "notification_targets": ["everyone"],
-}))
+    "devices_expr": True if expr == "true" else expr,
+}
+print(json.dumps(body))
 PY
 )
 
