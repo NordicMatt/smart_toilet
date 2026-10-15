@@ -222,35 +222,71 @@ Kconfig option is gated off until it's restored; see `app/Kconfig`.)
 
 ## Build & flash
 
-Built against an NCS **v3.4.0** tree with the nRF Edge AI add-on passed as extra
-Zephyr modules, the Wi-Fi shield, the cloud config overlay, and three secrets kept
-out of the repo entirely (`~/.memfault_project_key`, `~/.wifi_ssid`,
-`~/.wifi_password` — none of these are committed; cloud.conf only enables
-`CONFIG_WIFI_CREDENTIALS_STATIC`, it never contains the actual SSID/password):
+Built against **NCS v3.4.1** with the **nRF Edge AI add-on v3.0.0**, which pins
+that NCS version in its own `west.yml`. Firmware 2.3.x and older used add-on v2.x;
+v2.x model exports do not load on the v3 runtime. One-time workspace setup (the
+v3.4.1 toolchain must already be installed via `nrfutil sdk-manager`):
 
 ```sh
+mkdir ~/ncs/edge_ai_v3
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.1 --chdir ~/ncs/edge_ai_v3 -- \
+  west init --manifest-rev v3.0.0 --manifest-url https://github.com/nrfconnect/sdk-edge-ai
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.1 --chdir ~/ncs/edge_ai_v3 -- \
+  west update --narrow -o=--depth=1
+```
+
+The app is freestanding: it builds through that workspace, so `west` runs with
+`--chdir` and takes **absolute** app and build paths. The deployed configuration is
+the low-power one: Wi-Fi shield, the cloud overlay plus the duty-cycled radio
+overlay (`lowpower.conf`), and three secrets kept out of the repo entirely
+(`~/.memfault_project_key`, `~/.wifi_ssid`, `~/.wifi_password` — none of these are
+committed; cloud.conf only enables `CONFIG_WIFI_CREDENTIALS_STATIC`, it never
+contains the actual SSID/password):
+
+```sh
+APP=$PWD/app           # run from the repo root
+BUILD=$PWD/build_lp
 KEY=$(tr -d '\n' < ~/.memfault_project_key)
 SSID=$(tr -d '\n' < ~/.wifi_ssid)
 WIFI_PW=$(tr -d '\n' < ~/.wifi_password)
-nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 --chdir ~/ncs/v3.4.0 -- \
-  west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d build app -- \
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.1 --chdir ~/ncs/edge_ai_v3 -- \
+  west build -p always -b nrf54lm20dk/nrf54lm20b/cpuapp -d "$BUILD" "$APP" -- \
     -DSHIELD=nrf7002eb2 \
-    -DEXTRA_CONF_FILE=cloud.conf \
-    -DZEPHYR_EXTRA_MODULES=<addon>/edge-ai \
+    "-DEXTRA_CONF_FILE=$APP/cloud.conf;$APP/lowpower.conf" \
     -DCONFIG_MEMFAULT_NCS_PROJECT_KEY=\"$KEY\" \
     -DCONFIG_WIFI_CREDENTIALS_STATIC_SSID=\"$SSID\" \
-    -DCONFIG_WIFI_CREDENTIALS_STATIC_PASSWORD=\"$WIFI_PW\"
+    -DCONFIG_WIFI_CREDENTIALS_STATIC_PASSWORD=\"$WIFI_PW\" \
+  > build_lp.log 2>&1
 ```
+
+For the always-on Wi-Fi variant, drop `$APP/lowpower.conf` from `EXTRA_CONF_FILE`.
+The add-on is found through the workspace manifest, so `ZEPHYR_EXTRA_MODULES` is
+no longer needed. Keep the build output in a log: if CMake configure fails it
+echoes the full command line, secrets included.
+
+Before a release, bump the version in both `app/VERSION` and
+`CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION` (`prj.conf`). A unit whose version is older
+than its cohort's deployed release is pulled back by FOTA at its next drain window.
 
 Flash and reset (pass `--dev-id <JLINK_SN>` when more than one DK is attached; add
-`--erase` when the partition layout changed, e.g. switching from a TF-M /ns image):
+`--erase` when the partition layout changed, e.g. switching from a TF-M /ns image).
+The `nrfutil` runner erases only the sectors the image touches:
 
 ```sh
-nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 -- \
-  west flash -d build --dev-id <JLINK_SN>
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.1 --chdir ~/ncs/edge_ai_v3 -- \
+  west flash --no-rebuild -d "$BUILD" --dev-id <JLINK_SN>
 ```
 
-Footprint: FLASH ~45 %, RAM ~85 % of the nRF54LM20B.
+To tell the two DKs apart, read FICR DEVICEID; it is the Memfault device serial
+(high word first):
+
+```sh
+nrfutil device x-read --serial-number <JLINK_SN> --address 0x00FFC304 --bytes 8 --direct
+```
+
+Footprint (low-power build, 3.0.0): FLASH ~55 %, RAM ~95 % of the nRF54LM20B. The
+3-class KWS model's Axon state is 26.6 KB; it fits because the nRF70 RX buffers
+and data heap were cut to NCS 3.5's smaller defaults (see `cloud.conf`).
 
 ### Output
 
