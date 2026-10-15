@@ -12,6 +12,7 @@
 #include <nrf_edgeai/rt/nrf_edgeai_runtime_aux.h>
 #if defined(CONFIG_NRF_EDGEAI_OBSV)
 #include <nrf_edgeai_obsv/nrf_edgeai_obsv.h>
+#include <nrf_edgeai_obsv/nrf_edgeai_obsv_metrics.h>
 #if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
 #include <nrf_edgeai_obsv/nrf_edgeai_obsv_memfault.h>
 #endif
@@ -20,51 +21,63 @@
 #include "../audio_telemetry.h"
 #include "../dmic.h"
 #include "nrf_edgeai_generated/nrf_edgeai_user_model.h"
+#include "nrf_edgeai_generated/nrf_edgeai_user_model_labels.h"
 #include "wakeword.h"
 
 LOG_MODULE_REGISTER(ww);
 
 static nrf_edgeai_t *ww_model;
 
-#if defined(CONFIG_NRF_EDGEAI_OBSV)
-/* The abracadabra/okay_nordic wake-word models are single-output (one
- * probability = P(wakeword)); see MODEL_OUTPUTS_NUM in the generated model.
- * That is cross-checked against the model's runtime num_classes in
- * ww_obsv_init().
- *
- * The observability metrics are fed a TWO-class vector, { threshold, p }.
- * Reason: the class-streak metric records a streak when the argmax class
- * CHANGES, and a single-output model never changes class, so on 2.3.1 every
- * streak bin stayed at zero forever. With { threshold, p } the argmax flips
- * exactly when p crosses CONFIG_WW_PROBABILITY_THRESHOLD, i.e. the same
- * per-frame decision ww_postprocess() votes on. Row 1 of every metric is the
- * wake-word row: its probability histogram is unchanged from 2.3.x, and its
- * streak histogram now counts consecutive above-threshold frames. Row 0 is
- * the below-threshold complement (its probability histogram is a constant).
- * tools/decode_edgeai_cdr.py reads row 1 for two-row recordings.
+/* The abracadabra model (Edge AI Lab solution 96848, add-on v3.0.0) is a
+ * 3-class keyword-spotting export: OTHER, SILENCE, abracadabra. The detector
+ * votes on P(abracadabra), the wake-word class's own probability, not on the
+ * argmax class. (The v2.x export was single-output, P(wakeword) only.)
  */
-#define WW_MODEL_NUM_CLASSES 1
-#define WW_OBSV_NUM_CLASSES 2
+#define WW_NUM_CLASSES MODEL_USER_LABEL_COUNT
+#define WW_CLASS MODEL_USER_LABEL_ABRACADABRA
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV)
+/* The observability metrics see the model's real 3-class probability vector,
+ * so the class-predictions streak rows and the transition matrix follow the
+ * model's own argmax (v2.x fed a synthetic { threshold, p } pair instead).
+ * tools/decode_edgeai_cdr.py reads row WW_CLASS as the wake-word row.
+ */
+BUILD_ASSERT(CONFIG_NRF_EDGEAI_OBSV_MAX_CLASSES >= WW_NUM_CLASSES,
+	     "CONFIG_NRF_EDGEAI_OBSV_MAX_CLASSES is below the model class count");
+
 /* Upper bound on the mel vector length fed to the input-side metrics (the
- * abracadabra/okay_nordic models extract 40 mel bins per frame). */
+ * abracadabra model extracts 40 mel bins per frame). */
 #define WW_OBSV_MEL_MAX 64
 
 /* On-wire model identity carried in every snapshot, so the cloud can tell which
- * model produced a given probability distribution (A/B across models). This is
- * a compact app-defined id (the obsv model_id field is uint16_t, so the 5-6
- * digit Edge AI Lab solution numbers do not fit): 1 = "abracadabra" (solution
- * 93800), 2 = "Okay Nordic" (solution 36455). Keep these stable. */
-#if defined(CONFIG_APP_WW_MODEL_OKAY_NORDIC)
-#define WW_OBSV_MODEL_ID 2U
-#else
-#define WW_OBSV_MODEL_ID 1U
-#endif
+ * model produced a given distribution (A/B across models). This is a compact
+ * app-defined id: the obsv model_id field is uint16_t and the 5-digit Edge AI
+ * Lab solution numbers do not fit. 1 = "abracadabra" wake word (solution
+ * 93800), 2 = "Okay Nordic" (solution 36455), 3 = "abracadabra" 3-class KWS
+ * (solution 96848). Keep these stable. */
+#define WW_OBSV_MODEL_ID 3U
+
+#define WW_OBSV_WORDS(bytes) DIV_ROUND_UP(bytes, sizeof(uint32_t))
 
 static nrf_edgeai_obsv_ctx_t ww_obsv_ctx;
-static nrf_edgeai_obsv_metric_t ww_obsv_pd_metric;
-/* uint32_t array gives the natural alignment the storage macro requires. */
-static uint32_t ww_obsv_pd_buf[(NRF_EDGEAI_OBSV_PD_STORAGE_BYTES(WW_OBSV_NUM_CLASSES)
-				+ sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_PRED_DIST)
+/* Class predictions distribution: per-class probability histogram plus
+ * per-class streak-length histogram (merged v2.x probability-distribution and
+ * class-streak metrics). uint32_t arrays give the alignment the storage
+ * macros require. */
+static nrf_edgeai_obsv_metric_t ww_obsv_cpd_metric;
+static uint32_t ww_obsv_cpd_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_CPD_STORAGE_BYTES(WW_NUM_CLASSES))];
+#endif
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_TRANSITION_MATRIX)
+/* Class-to-class transitions between consecutive inferences, e.g. how often
+ * the model goes OTHER -> abracadabra (speech mistaken for the word) versus
+ * SILENCE -> abracadabra. */
+static nrf_edgeai_obsv_metric_t ww_obsv_tm_metric;
+static uint32_t ww_obsv_tm_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_TM_STORAGE_BYTES(WW_NUM_CLASSES))];
+#endif
+
 #if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
 /* Mel spectral descriptor: eight scale-invariant shape statistics of each
  * frame's 40-bin mel vector (band ratios, centroid, spread, entropy, flatness,
@@ -73,37 +86,39 @@ static uint32_t ww_obsv_pd_buf[(NRF_EDGEAI_OBSV_PD_STORAGE_BYTES(WW_OBSV_NUM_CLA
  * output-side histograms cannot tell apart. Storage is independent of the
  * feature count. */
 static nrf_edgeai_obsv_metric_t ww_obsv_msd_metric;
-static uint32_t ww_obsv_msd_buf[(NRF_EDGEAI_OBSV_MSD_STORAGE_BYTES(0)
-				 + sizeof(uint32_t) - 1) / sizeof(uint32_t)];
+static uint32_t ww_obsv_msd_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_MSD_STORAGE_BYTES(WW_OBSV_MEL_MAX))];
 #endif
 
-#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST)
-/* Class streak distribution: how many consecutive inferences the wake-word
- * class stays dominant. Kconfig only compiles the metric in; it still has to be
- * created and registered here, exactly like the probability distribution
- * (2.3.0 enabled the option but never registered it, so no CDR carried it).
- */
-static nrf_edgeai_obsv_metric_t ww_obsv_csd_metric;
-static uint32_t ww_obsv_csd_buf[(NRF_EDGEAI_OBSV_CSD_STORAGE_BYTES(WW_OBSV_NUM_CLASSES)
-				 + sizeof(uint32_t) - 1) / sizeof(uint32_t)];
-#endif
+/* Create and register one metric. Failures are logged by the caller. */
+static int ww_obsv_add(nrf_edgeai_obsv_metric_t *metric, const char *name)
+{
+	int err = nrf_edgeai_obsv_register(&ww_obsv_ctx, metric, NULL);
 
-/* Set up the probability-distribution metric and bind the Memfault CDR
- * transport. Called from ww_init() once the model is initialized (num_classes
- * is only valid after nrf_edgeai_init()). Failures are non-fatal: observability
- * is diagnostics, so a problem here must never stop the toilet flushing.
+	if (err) {
+		LOG_WRN("obsv %s metric register failed (err %d)", name, err);
+	}
+
+	return err;
+}
+
+/* Set up the observability metrics and bind the Memfault CDR transport.
+ * Called from ww_init() once the model is initialized (num_classes is only
+ * valid after nrf_edgeai_init()). Failures are non-fatal: observability is
+ * diagnostics, so a problem here must never stop the toilet flushing. The
+ * CDR payload follows the registration order.
  */
 static void ww_obsv_init(void)
 {
-	const uint16_t num_classes = WW_OBSV_NUM_CLASSES;
+	const nrf_edgeai_dsp_feature_extraction_t *fx = nrf_edgeai_dsp_features_ctx(ww_model);
 
-	__ASSERT_NO_MSG(ww_model->decoded_output.classif.num_classes == WW_MODEL_NUM_CLASSES);
+	__ASSERT_NO_MSG(nrf_edgeai_model_outputs_num(ww_model) == WW_NUM_CLASSES);
 
-	/* version 2: two-row { threshold, p } metrics (see WW_OBSV_NUM_CLASSES). */
+	/* version 3: the model's real 3-class probability vector. */
 	const nrf_edgeai_obsv_model_info_t model = {
 		.model_id = WW_OBSV_MODEL_ID,
-		.num_classes = num_classes,
-		.version = 2,
+		.num_classes = WW_NUM_CLASSES,
+		.num_features = fx != NULL ? fx->overall_num : 0,
+		.version = 3,
 	};
 
 	int err = nrf_edgeai_obsv_init(&ww_obsv_ctx, &model);
@@ -113,32 +128,27 @@ static void ww_obsv_init(void)
 		return;
 	}
 
-	nrf_edgeai_obsv_metric_pd_create(&ww_obsv_pd_metric, ww_obsv_pd_buf, num_classes);
-
-	err = nrf_edgeai_obsv_register(&ww_obsv_ctx, &ww_obsv_pd_metric, NULL);
-	if (err) {
-		LOG_WRN("obsv metric register failed (err %d)", err);
-		return;
-	}
-
-#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
-	nrf_edgeai_obsv_metric_msd_create(&ww_obsv_msd_metric, ww_obsv_msd_buf,
-					  ww_model->p_dsp->features.overall_num);
-
-	err = nrf_edgeai_obsv_register(&ww_obsv_ctx, &ww_obsv_msd_metric, NULL);
-	if (err) {
-		LOG_WRN("obsv mel metric register failed (err %d)", err);
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_PRED_DIST)
+	nrf_edgeai_obsv_metric_cpd_create(&ww_obsv_cpd_metric, ww_obsv_cpd_buf, WW_NUM_CLASSES);
+	if (ww_obsv_add(&ww_obsv_cpd_metric, "class-pred")) {
 		return;
 	}
 #endif
 
-#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST)
-	nrf_edgeai_obsv_metric_csd_create(&ww_obsv_csd_metric, ww_obsv_csd_buf, num_classes);
-
-	err = nrf_edgeai_obsv_register(&ww_obsv_ctx, &ww_obsv_csd_metric, NULL);
-	if (err) {
-		LOG_WRN("obsv streak metric register failed (err %d)", err);
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_TRANSITION_MATRIX)
+	nrf_edgeai_obsv_metric_tm_create(&ww_obsv_tm_metric, ww_obsv_tm_buf, WW_NUM_CLASSES);
+	if (ww_obsv_add(&ww_obsv_tm_metric, "transition")) {
 		return;
+	}
+#endif
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
+	if (fx != NULL && fx->overall_num <= WW_OBSV_MEL_MAX) {
+		nrf_edgeai_obsv_metric_msd_create(&ww_obsv_msd_metric, ww_obsv_msd_buf,
+						  fx->overall_num);
+		if (ww_obsv_add(&ww_obsv_msd_metric, "mel")) {
+			return;
+		}
 	}
 #endif
 
@@ -150,21 +160,15 @@ static void ww_obsv_init(void)
 	}
 #endif
 
-	LOG_INF("obsv: probability-distribution%s metric -> Memfault CDR (model %u)",
-		IS_ENABLED(CONFIG_NRF_EDGEAI_OBSV_METRIC_CLASS_STREAK_DIST) ? " + class-streak" : "",
+	LOG_INF("obsv: %u-class metrics -> Memfault CDR (model %u)", WW_NUM_CLASSES,
 		WW_OBSV_MODEL_ID);
 }
 #endif /* CONFIG_NRF_EDGEAI_OBSV */
 
 int ww_init(void)
 {
-#ifdef CONFIG_APP_WW_MODEL_OKAY_NORDIC
-	/* The add-on's bundled "Okay Nordic" reference wake word model. */
-	ww_model = nrf_edgeai_user_model_wakeword();
-#else
-	/* "Abracadabra" wake word model (Edge AI Lab solution 93800). */
-	ww_model = nrf_edgeai_user_model_93800();
-#endif
+	/* "Abracadabra" 3-class KWS model (Edge AI Lab solution 96848). */
+	ww_model = nrf_edgeai_user_model_96848();
 	__ASSERT_NO_MSG(ww_model);
 	__ASSERT_NO_MSG(ww_model->input.window_size == DMIC_SAMPLES_IN_BLOCK);
 
@@ -269,9 +273,9 @@ static bool ww_postprocess(void)
 		retry_frames--;
 	}
 
-	const uint16_t predicted_class = ww_model->decoded_output.classif.predicted_class;
-	const float class_probability =
-		ww_model->decoded_output.classif.probabilities.p_f32[predicted_class];
+	const float *probs = ww_model->decoded_output.classif.probabilities.p_f32;
+	/* Vote on the wake-word class's own probability, whatever the argmax. */
+	const float class_probability = probs[WW_CLASS];
 	/* The retry bar applies for CONFIG_WW_RETRY_WINDOW_MS after a near miss. */
 	const bool ww_detected =
 		class_probability > (retry_armed ? retry_threshold : ww_threshold);
@@ -282,39 +286,38 @@ static bool ww_postprocess(void)
 #if defined(CONFIG_NRF_EDGEAI_OBSV)
 	/* Feed the full class-probability vector to the observability metrics.
 	 * Thread-safe (takes ctx->lock), so it cannot race the auto-collect
-	 * encode running on the system workqueue. Bins the wake-word confidence
-	 * into the per-class histogram shipped to Memfault as a CDR. */
+	 * encode running on the system workqueue. */
 #if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
 	/* Feed the frame's mel vector first: feature updates do not advance the
-	 * inference counter, the probability update below does. The runtime
-	 * keeps the extracted features as int16 (see the generated model's
-	 * EXTRACTED_FEATURE type); convert to float and lift by the frame's
-	 * minimum so the vector is non-negative whether the mel values are
-	 * linear power (min ~0, no-op) or log-scaled (becomes "dB above the
-	 * frame floor"). The descriptor's shape statistics are ratios and
-	 * index-weighted moments, which stay meaningful in both cases; it clamps
-	 * negatives to zero, which would garble a log-mel frame. */
+	 * inference counter, the probability update below does. The DSP front
+	 * end leaves float mel values in the feature buffer (read as p_f32, as
+	 * the add-on's ww_kws reference does; v2.x read it as int16, which
+	 * garbled the vector). Lift by the frame's minimum so the vector is
+	 * non-negative whether the mel values are linear power (min ~0, no-op)
+	 * or log-scaled (becomes "dB above the frame floor"). The descriptor's
+	 * shape statistics are ratios and index-weighted moments, which stay
+	 * meaningful in both cases; it clamps negatives to zero, which would
+	 * garble a log-mel frame. */
 	{
-		const nrf_edgeai_dsp_feature_extraction_t *fx = &ww_model->p_dsp->features;
-		const uint16_t n = MIN(fx->overall_num, WW_OBSV_MEL_MAX);
-		const int16_t *mel = fx->buffer.p_i16;
-		float feats[WW_OBSV_MEL_MAX];
-		int16_t lo = mel[0];
+		const nrf_edgeai_dsp_feature_extraction_t *fx = nrf_edgeai_dsp_features_ctx(ww_model);
 
-		for (uint16_t i = 1; i < n; i++) {
-			lo = MIN(lo, mel[i]);
+		if (fx != NULL && fx->overall_num <= WW_OBSV_MEL_MAX) {
+			const uint16_t n = fx->overall_num;
+			const float *mel = fx->buffer.p_f32;
+			float feats[WW_OBSV_MEL_MAX];
+			float lo = mel[0];
+
+			for (uint16_t i = 1; i < n; i++) {
+				lo = MIN(lo, mel[i]);
+			}
+			for (uint16_t i = 0; i < n; i++) {
+				feats[i] = mel[i] - lo;
+			}
+			nrf_edgeai_obsv_update_features(&ww_obsv_ctx, feats, n);
 		}
-		for (uint16_t i = 0; i < n; i++) {
-			feats[i] = (float)(mel[i] - lo);
-		}
-		nrf_edgeai_obsv_update_features(&ww_obsv_ctx, feats, n);
 	}
 #endif
-	{
-		const float obsv_probs[WW_OBSV_NUM_CLASSES] = { ww_threshold, class_probability };
-
-		nrf_edgeai_obsv_update_probs(&ww_obsv_ctx, obsv_probs);
-	}
+	nrf_edgeai_obsv_update_probs(&ww_obsv_ctx, probs);
 #endif
 
 	const bool oldest_entry = (bool)(ww_history & BIT(CONFIG_WW_HISTORY_SIZE - 1));

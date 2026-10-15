@@ -118,6 +118,8 @@ LOG_MODULE_REGISTER(cloud, LOG_LEVEL_INF);
  * backstop is the duty-aware upload watchdog: two full periods with no
  * confirmed upload = something is persistently wrong -> coredump + reboot. */
 #define DRAIN_PERIOD_S	 CONFIG_APP_CONN_DRAIN_PERIOD_S
+/* Memfault keeps one CDR per device per day; see run_drain_window(). */
+#define CDR_COLLECT_PERIOD_S (24 * 60 * 60)
 /* Give up on connecting this cycle if Wi-Fi does not come up in this long
  * (AP down/out of range); the radio goes back off until the next period. */
 #define CONNECT_WAIT_S	 300
@@ -645,22 +647,32 @@ static void run_drain_window(void)
 
 	record_flushes();
 
-	/* Re-stage the edge-AI wake-word histogram so the once-a-day upload
-	 * carries a snapshot taken AT window time. The library's own auto-collect
-	 * timer is uptime-relative and drifts against the DRAIN period, so without
-	 * this the daily report could ship a snapshot up to one auto-collect
-	 * interval stale. Nothing is lost either way (the histogram is cumulative
-	 * since boot and nrf_edgeai_obsv_reset() is never called, so a re-staged
-	 * CDR is a superset of the one it overwrites) -- this is purely about the
-	 * daily report being current rather than hours behind. Best-effort: a
-	 * failed encode just means the previously staged CDR drains instead.
+	/* Stage the edge-AI observability CDR here, in the DRAIN window, rather
+	 * than from the library's uptime-relative auto-collect timer (off in
+	 * lowpower.conf). Since add-on v3.0.0 every collect encodes AND resets
+	 * the metrics, so each CDR carries only the interval since the previous
+	 * one, and Memfault retains at most one CDR per device per day: a second
+	 * CDR inside 24 h would be dropped together with its data. So collect at
+	 * most once per CDR_COLLECT_PERIOD_S; in between the metrics keep
+	 * accumulating. -EBUSY means the previous CDR has not drained yet and
+	 * nothing was reset, so the data rolls into the next one. A reboot loses
+	 * whatever accumulated since the last collect.
 	 */
 #if defined(CONFIG_NRF_EDGEAI_OBSV_MEMFAULT)
 	{
-		int cdr_err = nrf_edgeai_obsv_memfault_collect();
+		static uint32_t last_cdr_s;
+		static bool cdr_collected;
+		const uint32_t now_s = k_uptime_get_32() / MSEC_PER_SEC;
 
-		if (cdr_err) {
-			LOG_WRN("Edge-AI CDR collect failed (err %d); draining previous", cdr_err);
+		if (!cdr_collected || (now_s - last_cdr_s) >= CDR_COLLECT_PERIOD_S) {
+			int cdr_err = nrf_edgeai_obsv_memfault_collect();
+
+			if (cdr_err == 0) {
+				cdr_collected = true;
+				last_cdr_s = now_s;
+			} else if (cdr_err != -EBUSY) {
+				LOG_WRN("Edge-AI CDR collect failed (err %d)", cdr_err);
+			}
 		}
 	}
 #endif

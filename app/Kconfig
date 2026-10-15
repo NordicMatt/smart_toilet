@@ -37,17 +37,14 @@ choice APP_WW_MODEL
 	  better: the original 2-syllable "Shazaam" managed only ~50% at the
 	  deployment distance and was dropped.
 
-config APP_WW_MODEL_OKAY_NORDIC
-	bool "Okay Nordic (add-on bundled model)"
-	help
-	  4-syllable phrase; ~85-90% at far-field in live testing. Kept as
-	  a known-good reference model.
-
 config APP_WW_MODEL_ABRACADABRA
-	bool "Abracadabra (Edge AI Lab solution 93800)"
+	bool "Abracadabra (Edge AI Lab solution 96848, 3-class KWS)"
 	help
 	  5-syllable word, plosive-rich with alternating open vowels —
-	  ~95-100% at far-field in live testing.
+	  ~95-100% at far-field in live testing (v2.x solution 93800).
+	  Exported with Edge AI Lab 3.0.0 as a keyword-spotting model with
+	  OTHER, SILENCE and abracadabra classes. The v2.x exports (93800,
+	  "Okay Nordic") cannot run on the v3 runtime and were removed.
 
 endchoice
 

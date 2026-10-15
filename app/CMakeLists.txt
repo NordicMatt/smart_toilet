@@ -44,11 +44,7 @@ endif()
 # directory carries its own nrf_edgeai_generated/ files; the include
 # directory makes wakeword.c's "nrf_edgeai_generated/..." include resolve
 # to the selected model.
-if(CONFIG_APP_WW_MODEL_OKAY_NORDIC)
-  set(WW_MODEL_DIR src/ww/models/okay_nordic)
-else()
-  set(WW_MODEL_DIR src/ww/models/abracadabra)
-endif()
+set(WW_MODEL_DIR src/ww/models/abracadabra_kws)
 target_sources(app PRIVATE ${WW_MODEL_DIR}/nrf_edgeai_generated/nrf_edgeai_user_model.c)
 target_include_directories(app PRIVATE ${WW_MODEL_DIR})
 
