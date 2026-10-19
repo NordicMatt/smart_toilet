@@ -114,6 +114,14 @@ config WW_MISS_BUTTON_WINDOW_MS
 	  A failsafe-button press this soon after a near miss is taken as the
 	  user giving up on voice: reported as ww_miss_then_button_count.
 
+config WW_TRACE
+	bool "Log a per-utterance trace of wake-word probabilities to UART"
+	help
+	  Live-tuning aid. For each run of frames where any non-background
+	  class reaches 10 %, log one line with P(wake word) per frame in
+	  percent, the argmax class per frame, the peak vote count and whether
+	  it fired. Off in deployed builds.
+
 config APP_PDM_GAIN_DB
 	int "PDM microphone digital gain (dB)"
 	range -20 20

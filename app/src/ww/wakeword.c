@@ -258,6 +258,52 @@ static bool ww_track_near_miss(float p, bool fired, bool suppressed)
 	return true;
 }
 
+#ifdef CONFIG_WW_TRACE
+/* Live-tuning trace: one log line per burst of wake-word activity. A burst
+ * starts at the first frame with P(wake word) >= 10 % and ends after 15
+ * frames below it. Each frame prints as <P%><class>, class o/s/a = argmax
+ * OTHER/SILENCE/abracadabra.
+ */
+#define WW_TRACE_MAX 64
+static bool trace_fired;
+
+static void ww_trace_frame(const float *probs, uint32_t votes)
+{
+	static char line[WW_TRACE_MAX * 4 + 1];
+	static uint32_t len, frames, quiet, peak_votes;
+	const float p = probs[WW_CLASS];
+	uint32_t top = 0;
+
+	for (uint32_t i = 1; i < WW_NUM_CLASSES; i++) {
+		if (probs[i] > probs[top]) {
+			top = i;
+		}
+	}
+
+	if (frames == 0 && p < 0.10f) {
+		return;
+	}
+
+	quiet = (p < 0.10f) ? quiet + 1 : 0;
+	peak_votes = MAX(peak_votes, votes);
+
+	if (frames < WW_TRACE_MAX && quiet == 0) {
+		len += snprintk(&line[len], sizeof(line) - len, "%u%c ",
+				(unsigned int)(p * 100.f),
+				top == WW_CLASS ? 'a' : (top == MODEL_USER_LABEL_SILENCE ? 's' : 'o'));
+	}
+	frames++;
+
+	if (quiet >= 15 || frames >= WW_TRACE_MAX + 15) {
+		LOG_INF("trace %s votes %u/%d: %s", trace_fired ? "FIRED" : "miss",
+			peak_votes, CONFIG_WW_COUNT_THRESHOLD, line);
+		len = frames = quiet = peak_votes = 0;
+		line[0] = '\0';
+		trace_fired = false;
+	}
+}
+#endif /* CONFIG_WW_TRACE */
+
 static bool ww_postprocess(void)
 {
 	static uint32_t ww_count;
@@ -347,6 +393,10 @@ static bool ww_postprocess(void)
 	}
 #endif /* CONFIG_APP_AUDIO_STATS */
 
+#ifdef CONFIG_WW_TRACE
+	ww_trace_frame(probs, ww_count);
+#endif
+
 	if (refractory > 0) {
 		refractory--;
 		if (refractory == 0) {
@@ -366,6 +416,9 @@ static bool ww_postprocess(void)
 		ww_history = 0;
 		refractory = WW_REFRACTORY_FRAMES;
 		ww_track_near_miss(class_probability, true, false);
+#ifdef CONFIG_WW_TRACE
+		trace_fired = true;
+#endif
 
 		if (retry_armed) {
 			LOG_INF("ww: detection accepted at retry bar %.2f", (double)retry_threshold);
