@@ -6,6 +6,12 @@
     base();
     lid();
     assembled();
+    mic_section();
+
+  The PDM mic breakout mounts in a recess in the lid's underside, mic facing
+  up into a shallow pocket under a 1.2 mm skin; heat-stake its two pegs over
+  the board (mount from the ml_demo/enclosure mic test). The lid prints
+  letters-up with no supports.
 */
 
 $fn = 64;
@@ -27,7 +33,7 @@ height_above_pcb = 62;      // Free internal height above PCB top for 50.8 mm nR
 
 wall_thickness = 2.5;
 floor_thickness = 2.5;
-lid_thickness = 3.5;        // Thicker top gives room for blind locating-pin pockets.
+lid_thickness_min = 3.5;    // Room for blind locating-pin pockets; the mic pocket may need more (see derived lid_thickness).
 corner_radius = 3;
 
 standoff_radius = 3.5;
@@ -46,17 +52,38 @@ usbc_center_z = 13.5 - 3.2/2; // = 11.9  (top edge 13.5, minus half the 3.2 mm h
 usbc_slot_w   = 15;         // Y opening — clears a USB-C cable connector with margin.
 usbc_slot_h   = 8.5;        // Z opening.
 
-// Interior front microphone breakout holder.
-mic_board_w = 14;           // Mic breakout PCB width (X). VERIFY against actual board.
-mic_board_slot_t = 3.0;     // Slot thickness (Y) — roomy fit so the board slides easily and wires have space.
-mic_grip = 2.5;             // How much each side rail overlaps the board edge (X, per side).
-mic_slot_depth = 18;        // How far down from the tower top the board slides.
-mic_relief_t = 2.5;         // Relief pocket depth (Y) between front wall and board center, so the mic housing floats with an air gap.
-mic_audio_hole_r = 1.5;     // Front audio hole radius (3 mm diameter).
-mic_tower_wall = 2.5;       // Tower wall thickness.
-mic_capsule_z_offset = 6;   // Audio hole height above slot bottom; adjust per actual mic capsule layout.
-mic_tower_x = 30;           // Clears center locating column, corner bosses, and nearby PCB standoff/front PCB edge.
-mic_wire_cut_w = 12;        // Wire exit slot width through the holder's back wall, open at the top so wires drop in.
+// Adafruit PDM MEMS mic breakout (#3492) in the lid, mic facing up (top-port
+// MP34DT01-M). Mount from the ml_demo/enclosure mic test: pegs through the
+// board's two mounting holes, heat-staked (peg tips melted over the board);
+// the board rests flat on a seat ring round each peg, and a shallow pocket
+// under the rest of the board takes the mic and its caps, leaving only
+// mic_skin over the port.
+//
+// The lid prints letters-up, so the pegs can't stick out below it: the board
+// sits in a recess in the lid's underside, deep enough that the peg tips end
+// at the lid's bottom face. The pegs grow up from the bed, the seats are short
+// columns on top of them, and the mic pocket roof is a ~14 mm bridge, so it
+// still needs no supports.
+mic_board_w    = 13.97;     // Along the hole line (0.55").
+mic_board_h    = 12.7;      // Hole edge -> header edge (0.5").
+mic_hole_inset = 2.54;      // Hole centres from the top and side edges.
+mic_port_from_top = 5.6;    // Mic centre from the hole edge.
+mic_pcb_t      = 1.6;
+mic_chip_h     = 1.06;      // MP34DT01-M package; caps beside it are shorter.
+mic_post_r     = 2.0;       // Seat (unpocketed lid) radius around each peg.
+mic_pocket_margin = 0.3;    // Recess and pocket cover the whole board outline plus this.
+mic_pocket_d   = 1.3;       // Mic pocket above the seats: ~0.24 mm over the mic.
+mic_skin       = 1.2;       // Lid material over the pocket.
+mic_peg_r      = 1.0;       // 2.0 mm peg through the board's ~2.5 mm mounting hole (2.3 printed too tight).
+mic_peg_above  = 3.0;       // Peg past the back of the board, to heat-stake.
+mic_audio_hole_r = 1.5;     // 3 mm audio hole through the top.
+mic_audio_chamfer = 0.5;    // 45-deg chamfer on its outer edge.
+// Board centre on the lid (assembled coords), front side, under "Word" and
+// clear of the lettering, border, corner screws and locating-pin holes.
+// mic_rot turns the board; at 0 the header edge faces +X.
+mic_x   = 30;
+mic_y   = -30;
+mic_rot = 0;
 
 // Corner bosses and lid screws.
 boss_radius     = 4;
@@ -134,18 +161,18 @@ lid_lip_inner_width = lid_lip_outer_width - 2 * lip_thickness;
 
 outer_min_x = -outer_length / 2;
 front_outer_y = -outer_width / 2;
-front_inner_y = -internal_width / 2;
 
-mic_tower_w = mic_board_w + 2 * mic_tower_wall;
-mic_tower_depth = mic_relief_t + mic_board_slot_t + mic_tower_wall;
-mic_board_channel_w = mic_board_w + 0.5;
-mic_relief_w = mic_board_channel_w - 2 * mic_grip;
-mic_slot_bottom_z = base_height - mic_slot_depth;
-mic_slot_cut_h = mic_slot_depth + 0.4;
-mic_slot_cut_z = mic_slot_bottom_z - 0.1 + mic_slot_cut_h / 2;
-mic_tower_overlap = 0.05;
-mic_slot_wall_bite = 0.1;   // Relief pocket bites slightly into the wall face so the pocket front is exactly the wall.
-mic_audio_hole_z = floor_thickness + internal_height - mic_slot_depth + mic_capsule_z_offset;
+// Mic stack in the lid, from its bottom face (z = 0) up: peg tip, board back,
+// seat plane (board front), mic pocket roof, skin, lid top.
+mic_board_back_z = mic_peg_above;
+mic_seat_z       = mic_board_back_z + mic_pcb_t;
+mic_pocket_top_z = mic_seat_z + mic_pocket_d;
+lid_thickness    = max(lid_thickness_min, mic_pocket_top_z + mic_skin);   // 7.1 with the defaults.
+
+// Mic features relative to the mic board centre (X = toward header edge).
+mic_hole_dx = -(mic_board_h/2 - mic_hole_inset);
+mic_hole_dy = mic_board_w/2 - mic_hole_inset;
+mic_port_dx = mic_port_from_top - mic_board_h/2;
 
 // ---------------------------------------------------------------------------
 // Utility geometry
@@ -195,59 +222,55 @@ module usbc_slot() {
         cube([wall_thickness + 2 * strap_relief + 0.4, usbc_slot_w, usbc_slot_h], center = true);
 }
 
-module mic_holder() {
-    translate([
-        mic_tower_x,
-        front_inner_y + mic_tower_depth / 2 - mic_tower_overlap / 2,
-        floor_thickness + internal_height / 2 - mic_tower_overlap / 2
-    ])
-        cube(
-            [
-                mic_tower_w,
-                mic_tower_depth + mic_tower_overlap,
-                internal_height + mic_tower_overlap
-            ],
-            center = true
-        );
+// --- Lid mic mount ----------------------------------------------------------------
+// Local frame: mic board centre at the origin, X toward the header edge, z = 0
+// at the lid's bottom face. on_lid_mic() places it on the lid.
+
+module on_lid_mic() {
+    translate([mic_x, mic_y, 0]) rotate([0, 0, mic_rot]) children();
 }
 
-module mic_holder_cuts() {
-    // Relief pocket against the front wall, leaving side rails to grip PCB edges.
-    translate([
-        mic_tower_x,
-        front_inner_y + (mic_relief_t - mic_slot_wall_bite) / 2,
-        mic_slot_cut_z
-    ])
-        cube([mic_relief_w, mic_relief_t + mic_slot_wall_bite, mic_slot_cut_h], center = true);
+module mic_outline_2d() {
+    square([mic_board_h + 2 * mic_pocket_margin, mic_board_w + 2 * mic_pocket_margin], center = true);
+}
 
-    // Board channel: open from the top, just behind the relief pocket.
-    translate([
-        mic_tower_x,
-        front_inner_y + mic_relief_t + mic_board_slot_t / 2,
-        mic_slot_cut_z
-    ])
-        cube([mic_board_channel_w, mic_board_slot_t, mic_slot_cut_h], center = true);
+// Recess the board drops into from below, open at the bottom so the wires
+// leave straight down into the box; then the mic pocket above the seat plane,
+// leaving the seats as columns round the pegs.
+module mic_pocket_cut() {
+    translate([0, 0, -0.1])
+        linear_extrude(mic_seat_z + 0.1) mic_outline_2d();
+    translate([0, 0, mic_seat_z - 0.01])
+        linear_extrude(mic_pocket_d + 0.01) difference() {
+            mic_outline_2d();
+            for (sy = [-1, 1]) translate([mic_hole_dx, sy * mic_hole_dy]) circle(r = mic_post_r + 0.05);
+        }
+}
 
-    // Audio path through the front wall into the relief pocket.
-    translate([
-        mic_tower_x,
-        front_outer_y + wall_thickness / 2,
-        mic_audio_hole_z
-    ])
-        rotate([90, 0, 0])
-            cylinder(h = wall_thickness + 0.4, r = mic_audio_hole_r, center = true);
+// Pegs from the seats through the board holes to the lid's bottom face,
+// flat-bottomed so the whole peg footprint sticks to the bed.
+module mic_mount() {
+    for (sy = [-1, 1])
+        translate([mic_hole_dx, sy * mic_hole_dy, 0])
+            cylinder(h = mic_seat_z + 0.01, r = mic_peg_r);
+}
 
-    // Wire exit slot through the holder's back wall into the box interior —
-    // open all the way to the top so wires drop in instead of threading
-    // through a hole. The side rails still capture the board; the lid closes
-    // over the slot. Starts 1 mm below the slot bottom.
-    wire_cut_h = base_height - (mic_slot_bottom_z - 1) + 0.4;
-    translate([
-        mic_tower_x,
-        front_inner_y + mic_relief_t + mic_board_slot_t + (mic_tower_wall + 0.5) / 2 - 0.25,
-        mic_slot_bottom_z - 1 + wire_cut_h / 2
-    ])
-        cube([mic_wire_cut_w, mic_tower_wall + 0.5, wire_cut_h], center = true);
+module mic_audio_hole() {
+    translate([mic_port_dx, 0, mic_pocket_top_z - 0.1])
+        cylinder(h = lid_thickness - mic_pocket_top_z + 0.2, r = mic_audio_hole_r);
+    // 45-deg chamfer on the outer edge.
+    translate([mic_port_dx, 0, lid_thickness - mic_audio_chamfer])
+        cylinder(h = mic_audio_chamfer + 0.01, r1 = mic_audio_hole_r, r2 = mic_audio_hole_r + mic_audio_chamfer);
+}
+
+// Ghost of the mic board (and mic) for checking placement.
+module mic_board_ghost() {
+    translate([0, 0, mic_board_back_z])
+        linear_extrude(mic_pcb_t) difference() {
+            square([mic_board_h, mic_board_w], center = true);
+            for (sy = [-1, 1]) translate([mic_hole_dx, sy * mic_hole_dy]) circle(r = 1.25);
+        }
+    translate([mic_port_dx - 1.5, -2, mic_seat_z]) cube([3, 4, mic_chip_h]);
 }
 
 // Returns the XY center of a corner boss given its signs.
@@ -480,23 +503,31 @@ module base() {
 
             locating_columns();
 
-            mic_holder();
-
             chest_trim();
             wall_symbols();
         }
 
         usbc_slot();
         back_wall_holes();
-        mic_holder_cuts();
     }
 }
 
 module lid() {
     difference() {
         union() {
-            // Flat top plate — the bottom face is completely flat so the lid
-            // prints letters-up with no supports.
+            lid_shell();
+            on_lid_mic() mic_mount();
+        }
+        on_lid_mic() mic_audio_hole();
+    }
+}
+
+module lid_shell() {
+    difference() {
+        union() {
+            // Flat top plate — the bottom face is flat (the mic pocket is a
+            // recess with its pegs ending at the face) so the lid prints
+            // letters-up with no supports.
             rounded_box(outer_length, outer_width, lid_thickness, corner_radius);
 
             // Raised lettering standing proud of the top surface.
@@ -520,14 +551,28 @@ module lid() {
         for (p = loc_col_xy)
             translate([p[0], p[1], -0.1])
                 cylinder(h = loc_pin_hole_depth + 0.1, r = loc_pin_hole_r);
+
+        on_lid_mic() mic_pocket_cut();
     }
 }
 
 module assembled() {
     base();
 
-    translate([0, 0, base_height])
+    translate([0, 0, base_height]) {
         lid();
+        %on_lid_mic() mic_board_ghost();
+    }
+}
+
+// Close-up of the lid mic mount, cut at cut_dy from the board centre
+// (0 = through the audio hole, mic_hole_dy = through a peg).
+module mic_section(cut_dy = 0) {
+    intersection() {
+        lid();
+        translate([mic_x - 15, mic_y + cut_dy, -1]) cube([30, 15, 30]);
+    }
+    %on_lid_mic() mic_board_ghost();
 }
 
 // ---------------------------------------------------------------------------
