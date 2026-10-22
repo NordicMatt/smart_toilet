@@ -14,7 +14,7 @@ format_version 3 (firmware 3.0.0+, Edge AI add-on v3.0.0; obsv model id 3 =
   INCREMENTAL. Every collect encodes and then resets the metrics, so each CDR
   covers only the interval since the previous one; sum CDRs to aggregate.
   Metric ids (nrf_edgeai_obsv_metric_id in the add-on):
-    1 model certainty descriptor (not enabled in this firmware)
+    1 model certainty descriptor (enabled from 3.0.3)
     2 class predictions distribution: 2*N rows x 10 bins. Rows [0,N) are the
       per-class probability histograms over [0,1]; rows [N,2N) the per-class
       streak-length histograms (lengths 1..9, last bin >= 10), with

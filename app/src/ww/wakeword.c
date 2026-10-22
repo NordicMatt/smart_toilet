@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <zephyr/logging/log.h>
 #include <nrf_edgeai/nrf_edgeai.h>
@@ -89,6 +90,15 @@ static nrf_edgeai_obsv_metric_t ww_obsv_msd_metric;
 static uint32_t ww_obsv_msd_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_MSD_STORAGE_BYTES(WW_OBSV_MEL_MAX))];
 #endif
 
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MODEL_CERTAINTY_DESC)
+/* Model certainty descriptor: normalized-entropy and top-2 margin histograms
+ * plus argmax stability counters (switches / comparisons gives the switching
+ * rate off-device). Shows whether OTHER vs SILENCE is a confident call or a
+ * coin toss. Storage does not depend on the class count. */
+static nrf_edgeai_obsv_metric_t ww_obsv_mcd_metric;
+static uint32_t ww_obsv_mcd_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_MCD_STORAGE_BYTES(WW_NUM_CLASSES))];
+#endif
+
 /* Create and register one metric. Failures are logged by the caller. */
 static int ww_obsv_add(nrf_edgeai_obsv_metric_t *metric, const char *name)
 {
@@ -149,6 +159,13 @@ static void ww_obsv_init(void)
 		if (ww_obsv_add(&ww_obsv_msd_metric, "mel")) {
 			return;
 		}
+	}
+#endif
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MODEL_CERTAINTY_DESC)
+	nrf_edgeai_obsv_metric_mcd_create(&ww_obsv_mcd_metric, ww_obsv_mcd_buf, WW_NUM_CLASSES);
+	if (ww_obsv_add(&ww_obsv_mcd_metric, "certainty")) {
+		return;
 	}
 #endif
 
@@ -392,6 +409,30 @@ static bool ww_postprocess(void)
 		stat_max_count = 0;
 	}
 #endif /* CONFIG_APP_AUDIO_STATS */
+
+#ifdef CONFIG_WW_CLASS_STATS
+	/* Per-second argmax tally by class index, to check the label order on
+	 * the bench (33 inferences make one second, as above). */
+	static uint32_t cls_frames;
+	static uint16_t cls_wins[WW_NUM_CLASSES];
+	uint8_t top = 0;
+
+	for (uint8_t i = 1; i < WW_NUM_CLASSES; i++) {
+		if (probs[i] > probs[top]) {
+			top = i;
+		}
+	}
+	cls_wins[top]++;
+
+	if (++cls_frames >= 33) {
+		BUILD_ASSERT(WW_NUM_CLASSES == 3, "class stats log assumes 3 classes");
+		LOG_INF("ww classes/s: 0 %s %u, 1 %s %u, 2 %s %u", NRF_EDGEAI_USER_LABELS_NAME[0],
+			cls_wins[0], NRF_EDGEAI_USER_LABELS_NAME[1], cls_wins[1],
+			NRF_EDGEAI_USER_LABELS_NAME[2], cls_wins[2]);
+		cls_frames = 0;
+		memset(cls_wins, 0, sizeof(cls_wins));
+	}
+#endif /* CONFIG_WW_CLASS_STATS */
 
 #ifdef CONFIG_WW_TRACE
 	ww_trace_frame(probs, ww_count);

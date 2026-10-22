@@ -122,6 +122,15 @@ config WW_TRACE
 	  percent, the argmax class per frame, the peak vote count and whether
 	  it fired. Off in deployed builds.
 
+config WW_CLASS_STATS
+	bool "Log per-second argmax class counts to UART"
+	help
+	  Bench aid for checking the model's class labels. Once per second
+	  (33 inferences), log how many inferences each class won as the
+	  argmax, by index and label name. Compare quiet room, talking and
+	  flushing: the class that wins while talking is the speech class.
+	  Off in deployed builds.
+
 config APP_PDM_GAIN_DB
 	int "PDM microphone digital gain (dB)"
 	range -20 20

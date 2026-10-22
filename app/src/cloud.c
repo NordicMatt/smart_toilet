@@ -733,6 +733,24 @@ static void offline_wait(void)
 }
 #endif /* CONFIG_APP_CONN_DUTY_CYCLE */
 
+#if defined(CONFIG_APP_CONN_DUTY_CYCLE)
+/* conn_mgr's AUTO_IF_DOWN takes an iface admin-down on its own thread as soon
+ * as a disconnect completes, racing run_drain_window()'s explicit
+ * conn_mgr_all_if_down(): the loser's net_if_down() returns -EALREADY and
+ * conn_mgr logs it as an error on every window. Opt the bound ifaces out so
+ * the window teardown is the only thing that takes Wi-Fi down, and the power
+ * marker's falling edge is the real end of the teardown.
+ */
+static void no_auto_down_cb(struct net_if *iface, void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	if (conn_mgr_if_is_bound(iface)) {
+		(void)conn_mgr_if_set_flag(iface, CONN_MGR_IF_NO_AUTO_DOWN, true);
+	}
+}
+#endif
+
 static void cloud_thread_fn(void)
 {
 	/* Configure the bench marker low before the first window so the trace
@@ -768,6 +786,8 @@ static void cloud_thread_fn(void)
 	 * and doubles as the FOTA path for a freshly-swapped image to confirm
 	 * itself. After that: window, radio off, sleep, repeat.
 	 */
+	net_if_foreach(no_auto_down_cb, NULL);
+
 	memfault_metrics_connectivity_connected_state_change(
 		kMemfaultMetricsConnectivityState_Started);
 	note_progress();
