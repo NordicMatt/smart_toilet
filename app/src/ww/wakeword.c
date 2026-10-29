@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/logging/log.h>
@@ -90,6 +92,16 @@ static nrf_edgeai_obsv_metric_t ww_obsv_msd_metric;
 static uint32_t ww_obsv_msd_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_MSD_STORAGE_BYTES(WW_OBSV_MEL_MAX))];
 #endif
 
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_ENERGY_DESC)
+/* Mel energy descriptor (loudness): per-frame mean, max, dynamic range and
+ * floor-bin ratio of the mel vector, normalized against the bench-measured
+ * [p01, p99] range (MEL_ENERGY_DESC_SCALE_P01/P99_MILLI, see WW_MEL_CAL).
+ * The features are on a fixed scale (steps above the quantizer floor, see
+ * ww_postprocess()), so a uniform level change shows up here. */
+static nrf_edgeai_obsv_metric_t ww_obsv_med_metric;
+static uint32_t ww_obsv_med_buf[WW_OBSV_WORDS(NRF_EDGEAI_OBSV_MED_STORAGE_BYTES(WW_OBSV_MEL_MAX))];
+#endif
+
 #if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MODEL_CERTAINTY_DESC)
 /* Model certainty descriptor: normalized-entropy and top-2 margin histograms
  * plus argmax stability counters (switches / comparisons gives the switching
@@ -166,6 +178,16 @@ static void ww_obsv_init(void)
 	nrf_edgeai_obsv_metric_mcd_create(&ww_obsv_mcd_metric, ww_obsv_mcd_buf, WW_NUM_CLASSES);
 	if (ww_obsv_add(&ww_obsv_mcd_metric, "certainty")) {
 		return;
+	}
+#endif
+
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_ENERGY_DESC)
+	if (fx != NULL && fx->overall_num <= CONFIG_NRF_EDGEAI_OBSV_MEL_ENERGY_DESC_MAX_FEATURES) {
+		nrf_edgeai_obsv_metric_med_create(&ww_obsv_med_metric, ww_obsv_med_buf,
+						  fx->overall_num);
+		if (ww_obsv_add(&ww_obsv_med_metric, "energy")) {
+			return;
+		}
 	}
 #endif
 
@@ -321,6 +343,81 @@ static void ww_trace_frame(const float *probs, uint32_t votes)
 }
 #endif /* CONFIG_WW_TRACE */
 
+#ifdef CONFIG_WW_MEL_CAL
+/* Bench calibration for the mel energy descriptor's [p01, p99] scale. Keeps a
+ * uniform random sample (reservoir) of every mel feature value (quantizer
+ * steps above the floor) since boot, and every 10 s (330 inferences) logs its
+ * 1st/99th percentiles as the Kconfig lines to paste, plus the window's
+ * min/max/mean. Run it in the real room,
+ * quiet and with speech/flushing at normal distance, for a few minutes. */
+#define WW_MEL_CAL_SAMPLES 1024
+#define WW_MEL_CAL_FRAMES  330
+
+static int ww_mel_cal_cmp(const void *a, const void *b)
+{
+	const float x = *(const float *)a;
+	const float y = *(const float *)b;
+
+	return (x > y) - (x < y);
+}
+
+static void ww_mel_cal(const float *mel, uint16_t n)
+{
+	static float res[WW_MEL_CAL_SAMPLES];
+	static uint32_t seen, frames, rng = 2463534242U;
+	static float w_lo = INFINITY, w_hi = -INFINITY;
+	static double w_sum;
+	static uint32_t w_cnt;
+
+	for (uint16_t i = 0; i < n; i++) {
+		const float v = mel[i];
+
+		w_lo = MIN(w_lo, v);
+		w_hi = MAX(w_hi, v);
+		w_sum += (double)v;
+		w_cnt++;
+
+		if (seen < WW_MEL_CAL_SAMPLES) {
+			res[seen] = v;
+		} else {
+			/* xorshift32; slot order does not matter to the sample. */
+			rng ^= rng << 13;
+			rng ^= rng >> 17;
+			rng ^= rng << 5;
+			const uint32_t j = rng % (seen + 1U);
+
+			if (j < WW_MEL_CAL_SAMPLES) {
+				res[j] = v;
+			}
+		}
+		seen++;
+	}
+
+	if (++frames < WW_MEL_CAL_FRAMES) {
+		return;
+	}
+
+	const uint32_t k = MIN(seen, WW_MEL_CAL_SAMPLES);
+
+	qsort(res, k, sizeof(res[0]), ww_mel_cal_cmp);
+	const float p01 = res[(k - 1U) / 100U];
+	const float p99 = res[(k - 1U) * 99U / 100U];
+
+	LOG_INF("mel cal 10 s: min %.3f max %.3f mean %.3f", (double)w_lo, (double)w_hi,
+		(double)(w_sum / w_cnt));
+	LOG_INF("mel cal since boot (%u values): p01 %.3f p99 %.3f -> "
+		"SCALE_P01_MILLI=%d SCALE_P99_MILLI=%d",
+		seen, (double)p01, (double)p99, (int)lroundf(p01 * 1000.f),
+		(int)lroundf(p99 * 1000.f));
+
+	frames = 0;
+	w_lo = INFINITY;
+	w_hi = -INFINITY;
+	w_sum = 0.0;
+	w_cnt = 0;
+}
+#endif /* CONFIG_WW_MEL_CAL */
+
 static bool ww_postprocess(void)
 {
 	static uint32_t ww_count;
@@ -350,32 +447,31 @@ static bool ww_postprocess(void)
 	/* Feed the full class-probability vector to the observability metrics.
 	 * Thread-safe (takes ctx->lock), so it cannot race the auto-collect
 	 * encode running on the system workqueue. */
-#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC)
+#if defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC) ||                                    \
+	defined(CONFIG_NRF_EDGEAI_OBSV_METRIC_MEL_ENERGY_DESC)
 	/* Feed the frame's mel vector first: feature updates do not advance the
-	 * inference counter, the probability update below does. The DSP front
-	 * end leaves float mel values in the feature buffer (read as p_f32, as
-	 * the add-on's ww_kws reference does; v2.x read it as int16, which
-	 * garbled the vector). Lift by the frame's minimum so the vector is
-	 * non-negative whether the mel values are linear power (min ~0, no-op)
-	 * or log-scaled (becomes "dB above the frame floor"). The descriptor's
-	 * shape statistics are ratios and index-weighted moments, which stay
-	 * meaningful in both cases; it clamps negatives to zero, which would
-	 * garble a log-mel frame. */
+	 * inference counter, the probability update below does. For this Axon
+	 * q8 export the feature buffer holds the model's quantized input: one
+	 * int8 per mel bin, -128 at the quantizer floor (bench hex dump
+	 * 2026-10-29; most bins read 0x80 in a quiet room). Up to 3.0.3 it was
+	 * read as p_f32, which took those 40 bytes plus 120 bytes past them and
+	 * garbled the spectral descriptor in every v3 CDR. Shift to steps above
+	 * the floor (0..255): non-negative, as the spectral descriptor expects,
+	 * and on a fixed scale, as the energy descriptor needs. */
 	{
 		const nrf_edgeai_dsp_feature_extraction_t *fx = nrf_edgeai_dsp_features_ctx(ww_model);
 
 		if (fx != NULL && fx->overall_num <= WW_OBSV_MEL_MAX) {
 			const uint16_t n = fx->overall_num;
-			const float *mel = fx->buffer.p_f32;
+			const int8_t *mel = fx->buffer.p_void;
 			float feats[WW_OBSV_MEL_MAX];
-			float lo = mel[0];
 
-			for (uint16_t i = 1; i < n; i++) {
-				lo = MIN(lo, mel[i]);
-			}
 			for (uint16_t i = 0; i < n; i++) {
-				feats[i] = mel[i] - lo;
+				feats[i] = (float)mel[i] + 128.f;
 			}
+#ifdef CONFIG_WW_MEL_CAL
+			ww_mel_cal(feats, n);
+#endif
 			nrf_edgeai_obsv_update_features(&ww_obsv_ctx, feats, n);
 		}
 	}

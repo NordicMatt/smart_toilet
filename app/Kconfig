@@ -131,6 +131,15 @@ config WW_CLASS_STATS
 	  flushing: the class that wins while talking is the speech class.
 	  Off in deployed builds.
 
+config WW_MEL_CAL
+	bool "Log mel value percentiles for the energy descriptor's scale"
+	depends on NRF_EDGEAI_OBSV_METRIC_MEL_SPECTRAL_DESC || NRF_EDGEAI_OBSV_METRIC_MEL_ENERGY_DESC
+	help
+	  Bench aid for calibrating NRF_EDGEAI_OBSV_MEL_ENERGY_DESC_SCALE_P01/
+	  P99_MILLI. Samples every mel feature value since boot and every 10 s logs
+	  the 1st and 99th percentiles as the Kconfig values to set, plus the
+	  window's min/max/mean. Costs 4 KB of RAM. Off in deployed builds.
+
 config APP_PDM_GAIN_DB
 	int "PDM microphone digital gain (dB)"
 	range -20 20
