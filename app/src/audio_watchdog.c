@@ -13,7 +13,10 @@
 #ifdef CONFIG_TASK_WDT
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/init.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/task_wdt/task_wdt.h>
+#include <hal/nrf_wdt.h>
 #endif
 
 #include <memfault/panics/assert.h>
@@ -42,21 +45,21 @@
  * long -- so a false reboot of a working mic is not a practical risk. */
 #define MIC_STUCK_REBOOT_S 300
 #ifdef CONFIG_TASK_WDT
-/* Hardware-backed backstop: if the audio loop stops feeding for this long, the
- * task watchdog -- and, if even the kernel clock is dead, the nRF54 hardware WDT
- * it sits on -- forces a reset. Longer than AUDIO_STALL_REBOOT_S so the software
- * monitor fires first (with a coredump) for an ordinary thread stall; this layer
- * exists for what software CANNOT catch: a total lockup where the sysclock/ISRs
- * are dead so no k_timer runs at all.
+LOG_MODULE_REGISTER(audio_wdt, LOG_LEVEL_INF);
+
+/* Task-watchdog channel backstop: if the audio loop stops feeding for this long,
+ * task_wdt_cb() captures a coredump and resets. Longer than AUDIO_STALL_REBOOT_S so
+ * the software monitor fires first for an ordinary thread stall.
  *
- * Sized to survive a FOTA apply: the nRF WDT keeps counting across the soft
- * reset into MCUboot, whose swap runs against the external MX25R64 SPI-NOR
- * secondary slot and can outlast the old 120 s budget -- every OTA then ended
- * in a mid-swap WDT reset, reported fleet-wide as a bogus "Hardware Watchdog"
- * reboot instead of "Firmware Update" (reboot history 2026-07-10..13: one per
- * version boundary, on both devices). 10 min clears the slowest swap while
- * still catching a true total lockup; the 60 s software layers above remain
- * the fast, coredump-producing detectors. */
+ * This is NOT the hardware watchdog's timeout. task_wdt programs the nRF54 wdt31
+ * with CONFIG_TASK_WDT_MIN_TIMEOUT + CONFIG_TASK_WDT_HW_FALLBACK_DELAY and feeds it
+ * from its own timer; the hardware only fires if the kernel itself is dead. Up to
+ * 3.0.4 that window was the 100 + 20 ms default, and because a soft reset does not
+ * stop the nRF WDT, MCUboot and the next image inherited it: on 2026-10-29/30 every
+ * FOTA to Toilet #2 ended in a 120 ms reset during the swap or the new image's first
+ * boot, then a revert, a re-download and a 4-minute loop (reproduced on the bench).
+ * prj.conf now sets a 10 s window, and inherited_wdt_stop() below stops a watchdog
+ * left running by the previous image. */
 #define HW_WDT_TIMEOUT_MS 600000
 static int task_wdt_ch = -1;
 #endif
@@ -160,6 +163,57 @@ static void task_wdt_cb(int channel_id, void *user_data)
 }
 #endif
 
+#ifdef CONFIG_TASK_WDT
+/* Set when inherited_wdt_stop() found the hardware watchdog still running from the
+ * previous image; logged once the logger is up. */
+static bool inherited_wdt_was_running;
+static bool inherited_wdt_stopped;
+
+/* A soft reset (FOTA apply, coredump reboot, reason-marked reboot) leaves the nRF WDT
+ * counting with the previous image's configuration, which task_wdt_init() cannot
+ * change: the CRV/CONFIG registers are locked while it runs, and the driver's RAM
+ * state says "not started". MCUboot feeds it during a swap, but nothing feeds it in
+ * this image until audio_watchdog_start(), seconds later, so this image would be
+ * reset before it boots far enough to confirm itself -- and MCUboot then reverts.
+ * Stop it before the drivers initialise; the previous image started it with STOPEN
+ * set (wdt_nrfx sets NRF_WDT_BEHAVIOUR_STOP_ENABLE_MASK), and task_wdt starts it
+ * afresh later. PRE_KERNEL_1 runs within a few ms of reset, inside any window. */
+static int inherited_wdt_stop(void)
+{
+	NRF_WDT_Type *const wdt = (NRF_WDT_Type *)DT_REG_ADDR(DT_ALIAS(watchdog0));
+
+	if (!nrf_wdt_started_check(wdt)) {
+		return 0;
+	}
+	inherited_wdt_was_running = true;
+
+	if (!(wdt->CONFIG & WDT_CONFIG_STOPEN_Msk)) {
+		/* Not stoppable: feed every reload channel once, as MCUboot does, so at
+		 * least a full window is left. */
+		for (uint8_t i = 0; i < NRF_WDT_CHANNEL_NUMBER; i++) {
+			nrf_wdt_reload_request_set(wdt, (nrf_wdt_rr_register_t)(NRF_WDT_RR0 + i));
+		}
+		return 0;
+	}
+
+	nrf_wdt_event_clear(wdt, NRF_WDT_EVENT_STOPPED);
+	nrf_wdt_task_stop_enable_set(wdt, true);
+	nrf_wdt_task_trigger(wdt, NRF_WDT_TASK_STOP);
+	nrf_wdt_task_stop_enable_set(wdt, false);
+
+	/* STOPPED follows within a few 32 kHz cycles; bound the wait. */
+	for (uint32_t spin = 0; spin < 100000U; spin++) {
+		if (!nrf_wdt_started_check(wdt)) {
+			inherited_wdt_stopped = true;
+			break;
+		}
+	}
+	return 0;
+}
+
+SYS_INIT(inherited_wdt_stop, PRE_KERNEL_1, 0);
+#endif
+
 void audio_watchdog_start(void)
 {
 #ifdef CONFIG_TASK_WDT
@@ -169,8 +223,17 @@ void audio_watchdog_start(void)
 	 * ready the software monitor below still runs. */
 	const struct device *hw_wdt = DEVICE_DT_GET(DT_ALIAS(watchdog0));
 
-	if (device_is_ready(hw_wdt) && task_wdt_init(hw_wdt) == 0) {
+	if (inherited_wdt_was_running) {
+		LOG_WRN("Hardware watchdog was still running from the previous image: %s",
+			inherited_wdt_stopped ? "stopped at boot" : "NOT stoppable, fed once");
+	}
+
+	int err = device_is_ready(hw_wdt) ? task_wdt_init(hw_wdt) : -ENODEV;
+
+	if (err == 0) {
 		task_wdt_ch = task_wdt_add(HW_WDT_TIMEOUT_MS, task_wdt_cb, NULL);
+	} else {
+		LOG_ERR("task_wdt init failed (err %d); hardware watchdog not armed", err);
 	}
 #endif
 	audio_watchdog_feed();
